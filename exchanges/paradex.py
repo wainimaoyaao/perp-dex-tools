@@ -566,7 +566,7 @@ class ParadexClient(BaseExchangeClient):
     )
     async def _fetch_positions_with_retry(self) -> List[Dict[str, Any]]:
         """Get positions using official SDK."""
-        positions_response = self.paradex.api_client.fetch_all_derivatives_positions()
+        positions_response = self.paradex.api_client.fetch_positions()
         if not positions_response or 'results' not in positions_response:
             self.logger.log("Failed to get positions", "ERROR")
             raise ValueError("Failed to get positions")
