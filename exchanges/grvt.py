@@ -507,6 +507,146 @@ class GrvtClient(BaseExchangeClient):
 
         return Decimal(0)
 
+    @query_retry(reraise=True)
+    async def get_account_balance(self) -> Decimal:
+        """
+        Get account balance for compatibility with trading_bot.py.
+        This method returns the account equity which includes unrealized PnL.
+        """
+        return await self.get_account_equity()
+
+    @query_retry(reraise=True)
+    async def get_account_equity(self) -> Decimal:
+        """
+        Get account equity for drawdown calculation.
+        
+        Returns the total account equity including unrealized PnL.
+        This method uses GRVT's get_account_summary to get comprehensive account information.
+        """
+        try:
+            # Get account summary which includes equity and unrealized PnL
+            account_summary = self.rest_client.get_account_summary(type='sub-account')
+            
+            # Extract equity from account summary
+            # GRVT account summary typically includes 'equity' field
+            if 'equity' in account_summary:
+                equity = Decimal(str(account_summary['equity']))
+                self.logger.info(f"Account equity from summary: {equity}")
+                return equity
+            
+            # Fallback: try to get balance and calculate equity
+            balance_info = self.rest_client.fetch_balance(type='sub-account')
+            
+            # CCXT format balance includes 'total' which represents equity
+            if 'total' in balance_info and 'USDT' in balance_info['total']:
+                equity = Decimal(str(balance_info['total']['USDT']))
+                self.logger.info(f"Account equity from balance total: {equity}")
+                return equity
+            
+            # Another fallback: calculate from positions
+            positions = self.rest_client.fetch_positions()
+            total_equity = Decimal('0')
+            
+            for position in positions:
+                # Add unrealized PnL from each position
+                if 'unrealizedPnl' in position:
+                    unrealized_pnl = Decimal(str(position.get('unrealizedPnl', 0)))
+                    total_equity += unrealized_pnl
+                elif 'unrealized_pnl' in position:
+                    unrealized_pnl = Decimal(str(position.get('unrealized_pnl', 0)))
+                    total_equity += unrealized_pnl
+            
+            # Add available balance
+            if 'free' in balance_info and 'USDT' in balance_info['free']:
+                free_balance = Decimal(str(balance_info['free']['USDT']))
+                total_equity += free_balance
+            
+            self.logger.info(f"Calculated account equity: {total_equity}")
+            return total_equity
+            
+        except Exception as e:
+            self.logger.error(f"Error getting account equity: {e}")
+            # Return 0 as fallback to avoid breaking the trading bot
+            return Decimal('0')
+
+    @query_retry(reraise=True)
+    async def get_unrealized_pnl_and_margin(self) -> Tuple[Decimal, Decimal]:
+        """
+        获取未实现盈亏和初始保证金，用于简化的亏损计算。
+        
+        Returns:
+            Tuple[Decimal, Decimal]: (总未实现盈亏, 总初始保证金)
+        """
+        try:
+            # 获取所有仓位信息
+            positions = self.rest_client.fetch_positions()
+            
+            total_unrealized_pnl = Decimal('0')
+            total_initial_margin = Decimal('0')
+            
+            for position in positions:
+                # 获取未实现盈亏
+                unrealized_pnl = Decimal('0')
+                if 'unrealizedPnl' in position:
+                    unrealized_pnl = Decimal(str(position.get('unrealizedPnl', 0)))
+                elif 'unrealized_pnl' in position:
+                    unrealized_pnl = Decimal(str(position.get('unrealized_pnl', 0)))
+                elif 'pnl' in position:
+                    unrealized_pnl = Decimal(str(position.get('pnl', 0)))
+                
+                # 获取初始保证金
+                initial_margin = Decimal('0')
+                if 'initialMargin' in position:
+                    initial_margin = Decimal(str(position.get('initialMargin', 0)))
+                elif 'initial_margin' in position:
+                    initial_margin = Decimal(str(position.get('initial_margin', 0)))
+                elif 'margin' in position:
+                    initial_margin = Decimal(str(position.get('margin', 0)))
+                elif 'marginUsed' in position:
+                    initial_margin = Decimal(str(position.get('marginUsed', 0)))
+                
+                total_unrealized_pnl += unrealized_pnl
+                total_initial_margin += initial_margin
+                
+                self.logger.debug(f"Position {position.get('symbol', 'unknown')}: "
+                                f"unrealized_pnl={unrealized_pnl}, initial_margin={initial_margin}")
+            
+            self.logger.info(f"Total unrealized PnL: {total_unrealized_pnl}, "
+                           f"Total initial margin: {total_initial_margin}")
+            
+            return total_unrealized_pnl, total_initial_margin
+            
+        except Exception as e:
+            self.logger.error(f"Error getting unrealized PnL and margin: {e}")
+            # 返回 0 作为回退，避免破坏交易机器人
+            return Decimal('0'), Decimal('0')
+
+    async def get_position_loss_value(self) -> Decimal:
+        """
+        获取整体仓位亏损值的简化计算方法。
+        
+        使用公式：亏损值 = min(0, 未实现盈亏)
+        如果未实现盈亏为负数（亏损），则返回其绝对值；如果为正数（盈利），则返回0。
+        
+        Returns:
+            Decimal: 整体仓位亏损值（总是非负数）
+        """
+        try:
+            unrealized_pnl, initial_margin = await self.get_unrealized_pnl_and_margin()
+            
+            # 如果未实现盈亏为负数（亏损），返回其绝对值
+            # 如果为正数（盈利），返回0
+            loss_value = max(Decimal('0'), -unrealized_pnl)
+            
+            self.logger.info(f"Position loss value: {loss_value} "
+                           f"(unrealized_pnl: {unrealized_pnl}, initial_margin: {initial_margin})")
+            
+            return loss_value
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating position loss value: {e}")
+            return Decimal('0')
+
     async def get_contract_attributes(self) -> Tuple[str, Decimal]:
         """Get contract ID and tick size for a ticker."""
         ticker = self.config.ticker

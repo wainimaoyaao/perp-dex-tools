@@ -32,6 +32,9 @@ class TradingConfig:
     stop_price: Decimal
     pause_price: Decimal
     aster_boost: bool
+    # 回撤控制参数
+    max_drawdown: Decimal  # 最大回撤百分比
+    cooldown: int  # 冷却期分钟数
 
     @property
     def close_order_side(self) -> str:
@@ -81,6 +84,18 @@ class TradingBot:
         self.order_canceled_event = asyncio.Event()
         self.shutdown_requested = False
         self.loop = None
+        
+        # 回撤控制状态
+        self.peak_balance = Decimal('0')  # 账户余额峰值
+        self.current_balance = Decimal('0')  # 当前账户余额
+        self.in_cooldown = False  # 是否在冷却期
+        self.cooldown_start_time = 0  # 冷却期开始时间
+        self.drawdown_triggered = False  # 回撤是否已触发
+        
+        # 止损订单状态跟踪
+        self.stop_loss_order_id = None  # 当前止损订单ID
+        self.stop_loss_order_time = 0  # 止损订单下单时间
+        self.stop_loss_monitoring = False  # 是否正在监控止损订单
 
         # Register order callback
         self._setup_websocket_handlers()
@@ -490,6 +505,236 @@ class TradingBot:
             with TelegramBot(telegram_token, telegram_chat_id) as tg_bot:
                 tg_bot.send_text(message)
 
+    async def _check_loss_percentage(self) -> bool:
+        """检查基于未实现盈亏和保证金的亏损百分比。返回True表示需要止损。
+        只有在达到最大订单数后才会触发止损检查。"""
+        try:
+            # 检查是否达到最大订单数，只有达到最大订单数后才进行止损检查
+            if len(self.active_close_orders) < self.config.max_orders:
+                return False
+            
+            # 获取未实现盈亏和已使用保证金
+            if hasattr(self.exchange_client, 'get_unrealized_pnl_and_margin'):
+                unrealized_pnl, used_margin = await self.exchange_client.get_unrealized_pnl_and_margin()
+                
+                # 计算亏损百分比：亏损 / 已使用保证金 * 100
+                if used_margin > 0 and unrealized_pnl < 0:
+                    loss_percentage = abs(unrealized_pnl) / used_margin * 100
+                    
+                    # 检查是否达到亏损阈值
+                    if loss_percentage >= self.config.max_drawdown:
+                        self.logger.log(f"亏损百分比触发止损！当前订单数: {len(self.active_close_orders)}/{self.config.max_orders}, 未实现盈亏: {unrealized_pnl}, 已使用保证金: {used_margin}, 亏损百分比: {loss_percentage:.2f}%", "WARNING")
+                        return True
+                    
+                    # 记录监控信息（每分钟记录一次）
+                    if time.time() - self.last_log_time > 60:
+                        self.logger.log(f"亏损监控 - 订单数: {len(self.active_close_orders)}/{self.config.max_orders}, 未实现盈亏: {unrealized_pnl}, 已使用保证金: {used_margin}, 亏损百分比: {loss_percentage:.2f}%", "INFO")
+                        self.last_log_time = time.time()
+                else:
+                    # 如果没有亏损或没有保证金使用，记录状态
+                    if time.time() - self.last_log_time > 60:
+                        self.logger.log(f"亏损监控 - 订单数: {len(self.active_close_orders)}/{self.config.max_orders}, 未实现盈亏: {unrealized_pnl}, 已使用保证金: {used_margin} (无亏损)", "INFO")
+                        self.last_log_time = time.time()
+            else:
+                # 对于不支持 get_unrealized_pnl_and_margin 的交易所，使用原有逻辑
+                self.logger.log("交易所不支持未实现盈亏和保证金监控，跳过亏损检查", "WARNING")
+            
+            return False
+            
+        except Exception as e:
+            self.logger.log(f"检查亏损百分比时出错: {e}", "ERROR")
+            return False
+
+    async def _emergency_stop_loss(self):
+        """紧急止损：取消所有挂单并限价平仓所有持仓"""
+        try:
+            self.logger.log("开始执行紧急止损...", "WARNING")
+            
+            # 1. 取消所有活跃的止盈单
+            cancel_tasks = []
+            for order in self.active_close_orders:
+                order_id = order.get('id')
+                if order_id:
+                    cancel_tasks.append(self.exchange_client.cancel_order(order_id))
+            
+            if cancel_tasks:
+                self.logger.log(f"取消 {len(cancel_tasks)} 个挂单...", "INFO")
+                await asyncio.gather(*cancel_tasks, return_exceptions=True)
+                await asyncio.sleep(2)  # 等待取消完成
+            
+            # 2. 获取当前持仓并限价平仓
+            position_amt = await self.exchange_client.get_account_positions()
+            if abs(position_amt) > 0:
+                # 确定平仓方向
+                close_side = 'sell' if position_amt > 0 else 'buy'
+                close_quantity = abs(position_amt)
+                
+                # 获取当前市价
+                current_price = await self.exchange_client.get_current_price()
+                
+                # 计算限价平仓价格（稍微有利的价格确保快速成交）
+                if close_side == 'sell':
+                    # 卖出时，价格稍微低一点确保快速成交
+                    close_price = current_price * Decimal('0.999')  # 降低0.1%
+                else:
+                    # 买入时，价格稍微高一点确保快速成交
+                    close_price = current_price * Decimal('1.001')  # 提高0.1%
+                
+                # 调整价格精度
+                close_price = self.exchange_client.round_price(close_price)
+                
+                self.logger.log(f"限价平仓: {close_side} {close_quantity} @ {close_price}", "WARNING")
+                
+                # 限价平仓
+                close_result = await self.exchange_client.place_limit_order(
+                    self.config.contract_id,
+                    close_quantity,
+                    close_price,
+                    close_side
+                )
+                
+                if close_result.success:
+                    # 记录止损订单ID和状态
+                    self.stop_loss_order_id = close_result.order_id
+                    self.stop_loss_order_time = time.time()
+                    self.stop_loss_monitoring = True
+                    self.logger.log(f"限价止损订单已下达，订单ID: {self.stop_loss_order_id}", "INFO")
+                else:
+                    self.logger.log(f"限价止损订单下达失败: {close_result.error_message}", "ERROR")
+            else:
+                self.logger.log("无持仓需要平仓", "INFO")
+            
+            # 3. 设置触发状态和冷却期
+            self.drawdown_triggered = True
+            self.in_cooldown = True
+            self.cooldown_start_time = time.time()
+            
+            # 4. 获取亏损信息用于通知
+            loss_info = ""
+            try:
+                if hasattr(self.exchange_client, 'get_unrealized_pnl_and_margin'):
+                    unrealized_pnl, used_margin = await self.exchange_client.get_unrealized_pnl_and_margin()
+                    if used_margin > 0 and unrealized_pnl < 0:
+                        loss_percentage = abs(unrealized_pnl) / used_margin * 100
+                        loss_info = f"未实现盈亏: {unrealized_pnl}\n已使用保证金: {used_margin}\n亏损百分比: {loss_percentage:.2f}%\n"
+            except Exception as e:
+                self.logger.log(f"获取亏损信息失败: {e}", "ERROR")
+            
+            # 5. 发送通知
+            message = f"\n🚨 亏损止损触发 🚨\n"
+            message += f"交易所: {self.config.exchange.upper()}\n"
+            message += f"交易对: {self.config.ticker.upper()}\n"
+            message += loss_info
+            message += f"止损阈值: {self.config.max_drawdown}%\n"
+            message += f"冷却期: {self.config.cooldown} 分钟\n"
+            message += "所有挂单已取消，已下达限价止损订单"
+            
+            await self.send_notification(message)
+            
+        except Exception as e:
+            self.logger.log(f"紧急止损执行失败: {e}", "ERROR")
+            self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
+
+    async def _monitor_stop_loss_order(self):
+        """监控止损订单状态，如果3秒内未成交则重新挂单"""
+        if not self.stop_loss_monitoring or not self.stop_loss_order_id:
+            return
+        
+        try:
+            # 检查订单是否已经超过3秒
+            elapsed_time = time.time() - self.stop_loss_order_time
+            if elapsed_time < 3:
+                return
+            
+            # 检查订单状态
+            order_status = await self.exchange_client.get_order_status(self.stop_loss_order_id)
+            
+            if order_status and order_status.get('status') == 'filled':
+                # 订单已成交，停止监控
+                self.logger.log(f"止损订单已成交: {self.stop_loss_order_id}", "INFO")
+                self.stop_loss_monitoring = False
+                self.stop_loss_order_id = None
+                self.stop_loss_order_time = 0
+                return
+            
+            # 订单未成交，取消并重新挂单
+            self.logger.log(f"止损订单 {self.stop_loss_order_id} 超过3秒未成交，重新挂单", "WARNING")
+            
+            # 取消当前订单
+            try:
+                await self.exchange_client.cancel_order(self.stop_loss_order_id)
+                await asyncio.sleep(1)  # 等待取消完成
+            except Exception as e:
+                self.logger.log(f"取消止损订单失败: {e}", "ERROR")
+            
+            # 获取当前持仓并重新挂限价单
+            position_amt = await self.exchange_client.get_account_positions()
+            if abs(position_amt) > 0:
+                # 确定平仓方向
+                close_side = 'sell' if position_amt > 0 else 'buy'
+                close_quantity = abs(position_amt)
+                
+                # 获取当前市价
+                current_price = await self.exchange_client.get_current_price()
+                
+                # 计算限价平仓价格（稍微有利的价格确保快速成交）
+                if close_side == 'sell':
+                    # 卖出时，价格稍微低一点确保快速成交
+                    close_price = current_price * Decimal('0.999')  # 降低0.1%
+                else:
+                    # 买入时，价格稍微高一点确保快速成交
+                    close_price = current_price * Decimal('1.001')  # 提高0.1%
+                
+                # 调整价格精度
+                close_price = self.exchange_client.round_price(close_price)
+                
+                self.logger.log(f"重新挂止损单: {close_side} {close_quantity} @ {close_price}", "WARNING")
+                
+                # 重新下限价单
+                close_result = await self.exchange_client.place_limit_order(
+                    self.config.contract_id,
+                    close_quantity,
+                    close_price,
+                    close_side
+                )
+                
+                if close_result.success:
+                    # 更新止损订单信息
+                    self.stop_loss_order_id = close_result.order_id
+                    self.stop_loss_order_time = time.time()
+                    self.logger.log(f"止损订单重新下达成功，订单ID: {self.stop_loss_order_id}", "INFO")
+                else:
+                    self.logger.log(f"重新下达止损订单失败: {close_result.error_message}", "ERROR")
+                    self.stop_loss_monitoring = False
+            else:
+                # 无持仓，停止监控
+                self.logger.log("无持仓需要平仓，停止止损监控", "INFO")
+                self.stop_loss_monitoring = False
+                self.stop_loss_order_id = None
+                self.stop_loss_order_time = 0
+                
+        except Exception as e:
+            self.logger.log(f"监控止损订单时出错: {e}", "ERROR")
+            self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
+
+    def _check_cooldown_period(self) -> bool:
+        """检查是否还在冷却期内"""
+        if not self.in_cooldown:
+            return False
+            
+        elapsed_minutes = (time.time() - self.cooldown_start_time) / 60
+        
+        if elapsed_minutes >= self.config.cooldown:
+            self.in_cooldown = False
+            self.cooldown_start_time = 0
+            self.logger.log(f"冷却期结束，恢复交易。冷却时长: {elapsed_minutes:.1f} 分钟", "INFO")
+            return False
+        else:
+            remaining_minutes = self.config.cooldown - elapsed_minutes
+            if int(elapsed_minutes) % 5 == 0:  # 每5分钟提醒一次
+                self.logger.log(f"冷却期中，剩余 {remaining_minutes:.1f} 分钟", "INFO")
+            return True
+
     async def run(self):
         """Main trading loop."""
         try:
@@ -509,6 +754,8 @@ class TradingBot:
             self.logger.log(f"Stop Price: {self.config.stop_price}", "INFO")
             self.logger.log(f"Pause Price: {self.config.pause_price}", "INFO")
             self.logger.log(f"Aster Boost: {self.config.aster_boost}", "INFO")
+            self.logger.log(f"Max Drawdown: {self.config.max_drawdown}%", "INFO")
+            self.logger.log(f"Cooldown Period: {self.config.cooldown} minutes", "INFO")
             self.logger.log("=============================", "INFO")
 
             # Capture the running event loop for thread-safe callbacks
@@ -521,6 +768,13 @@ class TradingBot:
 
             # Main trading loop
             while not self.shutdown_requested:
+                # 1. 检查冷却期
+                if self._check_cooldown_period():
+                    # 在冷却期内，仍需监控止损订单状态
+                    await self._monitor_stop_loss_order()
+                    await asyncio.sleep(30)  # 冷却期中，等待30秒后再检查
+                    continue
+                
                 # Update active orders
                 active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
 
@@ -533,6 +787,12 @@ class TradingBot:
                             'price': order.price,
                             'size': order.size
                         })
+
+                # 2. 检查回撤控制（在获取订单信息后）
+                drawdown_triggered = await self._check_loss_percentage()
+                if drawdown_triggered:
+                    await self._emergency_stop_loss()
+                    continue  # 止损后继续循环，进入冷却期
 
                 # Periodic logging
                 mismatch_detected = await self._log_status_periodically()

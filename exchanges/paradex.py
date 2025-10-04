@@ -1,10 +1,9 @@
-"""
-Simplified Paradex exchange client implementation - L2 credentials only.
-"""
+"""Paradex exchange client implementation with PnL and margin support."""
 
 import os
 import asyncio
 import time
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Any, List, Optional, Tuple
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
@@ -567,12 +566,42 @@ class ParadexClient(BaseExchangeClient):
     )
     async def _fetch_positions_with_retry(self) -> List[Dict[str, Any]]:
         """Get positions using official SDK."""
-        positions_response = self.paradex.api_client.fetch_positions()
+        positions_response = self.paradex.api_client.fetch_all_derivatives_positions()
         if not positions_response or 'results' not in positions_response:
             self.logger.log("Failed to get positions", "ERROR")
             raise ValueError("Failed to get positions")
 
         return positions_response['results']
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_fixed(3),
+        retry=retry_if_exception_type(Exception),
+        reraise=True
+    )
+    async def _fetch_account_summary_with_retry(self) -> Dict[str, Any]:
+        """Get account summary using official SDK."""
+        account_response = self.paradex.api_client.fetch_current_summary_for_this_account()
+        if not account_response:
+            self.logger.log("Failed to get account summary", "ERROR")
+            raise ValueError("Failed to get account summary")
+
+        return account_response
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_fixed(3),
+        retry=retry_if_exception_type(Exception),
+        reraise=True
+    )
+    async def _fetch_balances_with_retry(self) -> List[Dict[str, Any]]:
+        """Get balances using official SDK."""
+        balances_response = self.paradex.api_client.fetch_all_coin_balances()
+        if not balances_response or 'results' not in balances_response:
+            self.logger.log("Failed to get balances", "ERROR")
+            raise ValueError("Failed to get balances")
+
+        return balances_response['results']
 
     async def get_account_positions(self) -> Decimal:
         """Get account positions using official SDK."""
@@ -590,6 +619,99 @@ class ParadexClient(BaseExchangeClient):
                 return abs(Decimal(position.get('size', 0)).quantize(self.order_size_increment, rounding=ROUND_HALF_UP))
 
         return Decimal(0)
+
+    async def get_account_balance(self) -> Dict[str, float]:
+        """Get account balance information."""
+        try:
+            # Get balances
+            balances = await self._fetch_balances_with_retry()
+            
+            # Get account summary
+            account_summary = await self._fetch_account_summary_with_retry()
+            
+            # Extract USDC balance
+            usdc_balance = 0.0
+            for balance in balances:
+                if balance.get('asset') == 'USDC':
+                    usdc_balance = float(balance.get('balance', 0))
+                    break
+            
+            # Extract other information from account summary
+            account_value = float(account_summary.get('account_value', 0))
+            collateral_value = float(account_summary.get('collateral_value', 0))
+            free_collateral = float(account_summary.get('free_collateral', 0))
+            
+            return {
+                'usdc_balance': usdc_balance,
+                'account_value': account_value,
+                'collateral_value': collateral_value,
+                'free_collateral': free_collateral,
+                'total_balance': account_value
+            }
+            
+        except Exception as e:
+            self.logger.log(f"Error fetching account balance: {e}", "ERROR")
+            return {
+                'usdc_balance': 0.0,
+                'account_value': 0.0,
+                'collateral_value': 0.0,
+                'free_collateral': 0.0,
+                'total_balance': 0.0
+            }
+
+    async def get_account_equity(self) -> float:
+        """Get account equity (account value)."""
+        try:
+            account_summary = await self._fetch_account_summary_with_retry()
+            return float(account_summary.get('account_value', 0))
+        except Exception as e:
+            self.logger.log(f"Error fetching account equity: {e}", "ERROR")
+            return 0.0
+
+    async def get_unrealized_pnl_and_margin(self) -> Tuple[Decimal, Decimal]:
+        """
+        获取未实现盈亏和初始保证金，用于简化的亏损计算。
+        
+        Returns:
+            Tuple[Decimal, Decimal]: (总未实现盈亏, 总初始保证金)
+        """
+        try:
+            # 获取账户摘要
+            account_summary = await self._fetch_account_summary_with_retry()
+            
+            # 获取所有持仓信息
+            positions = await self._fetch_positions_with_retry()
+            
+            # 计算总未实现盈亏
+            total_unrealized_pnl = Decimal('0')
+            for position in positions:
+                if position.get('status') == 'OPEN' and 'unrealized_pnl' in position:
+                    total_unrealized_pnl += Decimal(str(position['unrealized_pnl']))
+            
+            # 从账户摘要中提取初始保证金
+            initial_margin = Decimal(str(account_summary.get('initial_margin_requirement', 0)))
+            
+            return total_unrealized_pnl, initial_margin
+            
+        except Exception as e:
+            self.logger.log(f"Failed to get unrealized PnL and margin: {e}", "ERROR")
+            return Decimal('0'), Decimal('0')
+
+    async def get_position_loss_value(self, symbol: str) -> float:
+        """Get position loss value for a specific symbol."""
+        try:
+            positions = await self._fetch_positions_with_retry()
+            
+            for pos in positions:
+                if pos.get('market') == symbol and pos.get('status') == 'OPEN':
+                    unrealized_pnl = float(pos.get('unrealized_pnl', 0))
+                    return unrealized_pnl
+            
+            return 0.0
+            
+        except Exception as e:
+            self.logger.log(f"Error fetching position loss value for {symbol}: {e}", "ERROR")
+            return 0.0
 
     @retry(
         stop=stop_after_attempt(5),

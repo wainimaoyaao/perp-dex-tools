@@ -10,25 +10,7 @@
 
 A modular trading bot that supports multiple exchanges including EdgeX, Backpack, Paradex, Aster, Lighter, and GRVT. The bot implements an automated strategy that places orders and automatically closes them at a profit.
 
-## Referral Links (Enjoy fee rebates and benefits)
 
-#### EdgeX: [https://pro.edgex.exchange/referral/QUANT](https://pro.edgex.exchange/referral/QUANT)
-
-Instant VIP 1 Trading Fees; 10% Fee Rebate; 10% Bonus Points
-
-#### Backpack Exchange: [https://backpack.exchange/join/quant](https://backpack.exchange/join/quant)
-
-You will get 35% fee rebates on all your trading fees
-
-#### Paradex Exchange: [https://app.paradex.trade/r/quant](https://app.paradex.trade/r/quant)
-
-You will get 10% taker fee discount rebates and potential future benefits
-
-#### Aster Exchange: [https://www.asterdex.com/zh-CN/referral/5191B1](https://www.asterdex.com/zh-CN/referral/5191B1)
-
-You will get 30% fee rebates and points boost
-
-#### GRVT Exchange: [https://grvt.io/exchange/sign-up?ref=QUANT](https://grvt.io/exchange/sign-up?ref=QUANT)
 
 ## Installation
 
@@ -164,6 +146,42 @@ Assuming current ETH price is $2000 with take-profit set to 0.02%:
 - **Order Frequency Control**: Controls order timing via `wait-time` to prevent being trapped in short periods
 - **Real-time Monitoring**: Continuously monitors positions and order status
 - **⚠️ No Stop Loss**: This strategy does not include stop-loss functionality and may face significant losses in adverse market conditions
+
+#### 📈 PnL and Margin Monitoring Features
+
+The bot now supports real-time monitoring of account profit and loss (PnL) and margin status, providing comprehensive risk management:
+
+##### 🔍 Monitoring Features
+
+- **Account Balance Monitoring**: Real-time tracking of available account balance
+- **Account Equity Monitoring**: Monitor total account equity (including unrealized PnL)
+- **Unrealized PnL Calculation**: Real-time calculation of unrealized PnL for all positions
+- **Margin Usage Monitoring**: Monitor initial margin requirements
+- **Position Loss Assessment**: Calculate potential losses of current positions
+
+##### 🎯 Supported Exchanges
+
+Currently, PnL and margin monitoring features support the following exchanges:
+
+- **Paradex**: Full support for all PnL and margin monitoring features
+- **Other Exchanges**: Support is being gradually added
+
+##### 📊 Monitoring Data
+
+The bot periodically records the following key metrics:
+
+- **Account Balance**: Current funds available for trading
+- **Account Equity**: Total account value (balance + unrealized PnL)
+- **Unrealized PnL**: Floating profit/loss of all open positions
+- **Initial Margin**: Margin required to maintain current positions
+- **Position Loss**: Potential loss amount of current positions
+
+##### ⚠️ Enhanced Risk Management
+
+- **Real-time Risk Assessment**: Risk evaluation based on PnL data
+- **Margin Monitoring**: Prevent forced liquidation due to insufficient margin
+- **Loss Alerts**: Provide warnings when position losses exceed preset thresholds
+- **Data Logging**: All PnL and margin data are recorded in logs
 
 ## Sample commands:
 
