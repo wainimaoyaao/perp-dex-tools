@@ -53,8 +53,6 @@ def parse_arguments():
     # 回撤控制参数
     parser.add_argument('--max-drawdown', type=Decimal, default=Decimal('10.0'),
                         help='Maximum drawdown percentage to trigger stop loss (default: 10.0)')
-    parser.add_argument('--cooldown', type=int, default=30,
-                        help='Cooldown period in minutes after stop loss (default: 30)')
 
     return parser.parse_args()
 
@@ -123,8 +121,7 @@ async def main():
         stop_price=Decimal(args.stop_price),
         pause_price=Decimal(args.pause_price),
         aster_boost=args.aster_boost,
-        max_drawdown=args.max_drawdown,
-        cooldown=args.cooldown
+        max_drawdown=args.max_drawdown
     )
 
     # Create and run the bot
