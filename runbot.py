@@ -50,9 +50,16 @@ def parse_arguments():
     parser.add_argument('--aster-boost', action='store_true',
                         help='Use the Boost mode for volume boosting')
     
-    # 回撤控制参数
-    parser.add_argument('--max-drawdown', type=Decimal, default=Decimal('10.0'),
-                        help='Maximum drawdown percentage to trigger stop loss (default: 10.0)')
+    # Drawdown monitoring parameters
+    parser.add_argument('--enable-drawdown-monitor', action='store_true',
+                        help='Enable drawdown monitoring and stop-loss protection')
+    parser.add_argument('--drawdown-light-threshold', type=Decimal, default=Decimal(5),
+                        help='Light drawdown warning threshold in percentage (default: 5)')
+    parser.add_argument('--drawdown-medium-threshold', type=Decimal, default=Decimal(8),
+                        help='Medium drawdown warning threshold in percentage (default: 8)')
+    parser.add_argument('--drawdown-severe-threshold', type=Decimal, default=Decimal(12),
+                        help='Severe drawdown stop-loss threshold in percentage (default: 12)')
+
 
     return parser.parse_args()
 
@@ -121,7 +128,10 @@ async def main():
         stop_price=Decimal(args.stop_price),
         pause_price=Decimal(args.pause_price),
         aster_boost=args.aster_boost,
-        max_drawdown=args.max_drawdown
+        enable_drawdown_monitor=args.enable_drawdown_monitor,
+        drawdown_light_threshold=args.drawdown_light_threshold,
+        drawdown_medium_threshold=args.drawdown_medium_threshold,
+        drawdown_severe_threshold=args.drawdown_severe_threshold
     )
 
     # Create and run the bot

@@ -1,6 +1,3 @@
-##### 关注我 **X (Twitter)**: [@yourQuantGuy](https://x.com/yourQuantGuy)
-
----
 
 **English speakers**: Please read README_EN.md for the English version of this documentation.
 
@@ -166,7 +163,8 @@ Python 版本要求（最佳选项是 Python 3.10 - 3.12）：
 - **网格控制**：通过 `grid-step` 确保平仓订单有合理间距
 - **下单频率控制**：通过 `wait-time` 确保下单的时间间隔，防止短时间内被套
 - **实时监控**：持续监控持仓和订单状态
-- **⚠️ 无止损机制**：此策略不包含止损功能，在不利市场条件下可能面临较大损失
+- **回撤监控**：可选的智能回撤监控系统，提供多级风险预警和自动止损
+- **⚠️ 基础策略无止损机制**：基础策略不包含止损功能，但可通过回撤监控功能实现风险管理
 
 #### 📈 PnL 和保证金监控功能
 
@@ -203,6 +201,45 @@ Python 版本要求（最佳选项是 Python 3.10 - 3.12）：
 - **保证金监控**：防止保证金不足导致的强制平仓
 - **损失预警**：当持仓损失超过预设阈值时提供预警
 - **数据记录**：所有 PnL 和保证金数据都会记录到日志中
+
+#### 📉 回撤监控功能
+
+机器人现在支持智能回撤监控系统，提供多级风险预警和自动止损功能：
+
+##### 🎯 监控级别
+
+- **轻微回撤（默认 5%）**：发送通知提醒，继续正常交易
+- **中等回撤（默认 8%）**：暂停新订单，仅允许平仓操作
+- **严重回撤（默认 12%）**：立即停止所有交易，触发自动止损
+
+##### ⚙️ 配置参数
+
+- `--enable-drawdown-monitor`: 启用回撤监控功能
+- `--drawdown-light-threshold`: 轻微回撤阈值（默认 5.0%）
+- `--drawdown-medium-threshold`: 中等回撤阈值（默认 8.0%）
+- `--drawdown-severe-threshold`: 严重回撤阈值（默认 12.0%）
+
+##### 🔄 工作原理
+
+1. **会话初始化**：交易开始时记录初始净值作为基准
+2. **实时监控**：持续获取账户净值，计算相对于会话峰值的回撤百分比
+3. **智能平滑**：使用移动平均算法减少净值波动的误报
+4. **分级响应**：根据回撤程度采取不同的风险管理措施
+5. **自动恢复**：当回撤水平降低时，自动恢复正常交易
+
+##### 📊 监控数据
+
+- **会话峰值净值**：交易会话中达到的最高净值
+- **当前净值**：实时账户净值
+- **回撤百分比**：(峰值净值 - 当前净值) / 峰值净值 × 100%
+- **平滑净值**：经过移动平均处理的净值，减少噪音
+
+##### 🚨 风险管理增强
+
+- **实时通知**：通过 Telegram/Lark 发送回撤警报
+- **自动止损**：严重回撤时自动停止交易
+- **渐进式响应**：根据回撤严重程度采取不同措施
+- **会话重置**：每次启动交易时重新计算基准净值
 
 ## 示例命令：
 
@@ -267,6 +304,92 @@ BTC：
 ```bash
 python runbot.py --exchange grvt --ticker BTC --quantity 0.05 --take-profit 0.02 --max-orders 40 --wait-time 450
 ```
+
+### 回撤监控详细使用指南：
+
+#### 📋 可用参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--enable-drawdown-monitor` | flag | False | 启用回撤监控功能 |
+| `--drawdown-light-threshold` | Decimal | 5 | 轻微回撤警告阈值 (%) |
+| `--drawdown-medium-threshold` | Decimal | 8 | 中等回撤警告阈值 (%) |
+| `--drawdown-severe-threshold` | Decimal | 12 | 严重回撤止损阈值 (%) |
+
+#### 💡 使用示例
+
+##### 1. 使用默认阈值启用回撤监控
+```bash
+python runbot.py --exchange edgex --ticker ETH --quantity 0.1 --take-profit 0.02 --enable-drawdown-monitor
+```
+- 轻微回撤: 5%
+- 中等回撤: 8%
+- 严重回撤: 12%
+
+##### 2. 保守策略 - 较低的回撤阈值
+```bash
+python runbot.py --exchange edgex --ticker ETH --quantity 0.1 --take-profit 0.02 --enable-drawdown-monitor \
+  --drawdown-light-threshold 3.0 \
+  --drawdown-medium-threshold 5.0 \
+  --drawdown-severe-threshold 8.0
+```
+适用于风险厌恶型交易者，更早触发保护机制。
+
+##### 3. 激进策略 - 较高的回撤阈值
+```bash
+python runbot.py --exchange backpack --ticker ETH --quantity 0.1 --take-profit 0.02 --enable-drawdown-monitor \
+  --drawdown-light-threshold 8.0 \
+  --drawdown-medium-threshold 12.0 \
+  --drawdown-severe-threshold 18.0
+```
+适用于风险承受能力较强的交易者，允许更大的回撤。
+
+##### 4. 完整的交易配置示例
+```bash
+python runbot.py \
+  --exchange edgex \
+  --ticker BTC \
+  --quantity 0.05 \
+  --direction buy \
+  --max-orders 40 \
+  --wait-time 450 \
+  --enable-drawdown-monitor \
+  --drawdown-light-threshold 4.0 \
+  --drawdown-medium-threshold 7.0 \
+  --drawdown-severe-threshold 10.0
+```
+
+#### 🎯 监控行为详解
+
+##### 轻微回撤 (Light Drawdown)
+- **触发条件**: 当前净值相对于会话峰值的回撤达到轻微阈值
+- **行为**: 记录警告日志并发送通知，交易继续正常进行
+- **通知内容**: 包含当前净值、峰值净值、回撤百分比等信息
+
+##### 中等回撤 (Medium Drawdown)
+- **触发条件**: 回撤达到中等阈值
+- **行为**: 暂停新订单的创建，仅允许现有仓位的平仓操作
+- **恢复**: 当回撤降低到中等阈值以下时，自动恢复正常交易
+
+##### 严重回撤 (Severe Drawdown)
+- **触发条件**: 回撤达到严重阈值
+- **行为**: 立即停止所有交易活动并优雅退出程序
+- **不可恢复**: 需要手动重启程序才能继续交易
+
+#### ⚠️ 注意事项
+
+1. **阈值顺序**: 必须满足 `light < medium < severe` 的关系
+2. **实时监控**: 回撤监控在主交易循环中实时进行
+3. **净值计算**: 基于交易所账户的实际净值进行计算
+4. **会话峰值**: 每次启动程序时重新计算会话峰值
+5. **通知系统**: 支持 Telegram 和 Lark 通知（需要配置相应的 bot）
+
+#### 🏆 最佳实践
+
+1. **首次使用**: 建议从保守的阈值开始，逐步调整到适合的水平
+2. **回测验证**: 在实盘使用前，建议通过历史数据验证阈值设置的合理性
+3. **定期调整**: 根据市场条件和交易表现定期调整阈值
+4. **监控日志**: 密切关注回撤监控的日志输出，了解触发频率和效果
 
 ## 配置
 
@@ -341,6 +464,10 @@ python runbot.py --exchange grvt --ticker BTC --quantity 0.05 --take-profit 0.02
 - `--stop-price`: 当 `direction` 是 'buy' 时，当 price >= stop-price 时停止交易并退出程序；'sell' 逻辑相反（默认：-1，表示不会因为价格原因停止交易），参数的目的是防止订单被挂在”你认为的开多高点或开空低点“。
 - `--pause-price`: 当 `direction` 是 'buy' 时，当 price >= pause-price 时暂停交易，并在价格回到 pause-price 以下时重新开始交易；'sell' 逻辑相反（默认：-1，表示不会因为价格原因停止交易），参数的目的是防止订单被挂在”你认为的开多高点或开空低点“。
 - `--aster-boost`: 启用 Aster 交易所的 Boost 模式进行交易量提升（仅适用于 aster 交易所）
+- `--enable-drawdown-monitor`: 启用回撤监控功能（可选）
+- `--drawdown-light-threshold`: 轻微回撤阈值，百分比（默认 5.0）
+- `--drawdown-medium-threshold`: 中等回撤阈值，百分比（默认 8.0）
+- `--drawdown-severe-threshold`: 严重回撤阈值，百分比（默认 12.0）
   `--aster-boost` 的下单逻辑：下 maker 单开仓，成交后立即用 taker 单关仓，以此循环。磨损为一单 maker，一单 taker 的手续费，以及滑点。
 
 ## 日志记录

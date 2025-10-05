@@ -541,3 +541,45 @@ class LighterClient(BaseExchangeClient):
             raise ValueError("Failed to get tick size")
 
         return self.config.contract_id, self.config.tick_size
+
+    @query_retry(reraise=True)
+    async def get_account_networth(self) -> Decimal:
+        """
+        Get account net worth (account balance + unrealized PnL).
+        
+        Returns:
+            Decimal: Account net worth for drawdown monitoring
+        """
+        try:
+            # Use shared API client to get account info
+            account_api = lighter.AccountApi(self.api_client)
+            
+            # Get account data
+            account_data = await account_api.account(by="index", value=str(self.account_index))
+            
+            if not account_data or not account_data.accounts:
+                self.logger.log("Failed to get account data", "ERROR")
+                return Decimal('0')
+            
+            account = account_data.accounts[0]
+            
+            # Calculate total net worth (balance + unrealized PnL)
+            total_balance = Decimal('0')
+            
+            # Add account balance
+            if hasattr(account, 'balance') and account.balance:
+                total_balance += Decimal(str(account.balance))
+            
+            # Add unrealized PnL from positions
+            if hasattr(account_data, 'positions') and account_data.positions:
+                for position in account_data.positions:
+                    if hasattr(position, 'unrealized_pnl'):
+                        unrealized_pnl = Decimal(str(position.unrealized_pnl))
+                        total_balance += unrealized_pnl
+            
+            self.logger.log(f"Account net worth: {total_balance}", "INFO")
+            return total_balance
+            
+        except Exception as e:
+            self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
+            return Decimal('0')

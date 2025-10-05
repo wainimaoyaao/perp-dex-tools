@@ -739,6 +739,28 @@ class AsterClient(BaseExchangeClient):
 
         return Decimal(0)
 
+    @query_retry(reraise=True)
+    async def get_account_networth(self) -> Decimal:
+        """
+        Get account net worth (account balance + unrealized PnL).
+        
+        Returns:
+            Decimal: Account net worth for drawdown monitoring
+        """
+        try:
+            # Get account information from Aster
+            account_info = await self._make_request('GET', '/fapi/v2/account')
+            
+            # Extract total wallet balance (includes unrealized PnL)
+            total_wallet_balance = Decimal(str(account_info.get('totalWalletBalance', 0)))
+            
+            self.logger.log(f"Account net worth: {total_wallet_balance}", "INFO")
+            return total_wallet_balance
+            
+        except Exception as e:
+            self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
+            return Decimal('0')
+
     async def get_contract_attributes(self) -> Tuple[str, Decimal]:
         """Get contract ID and tick size for a ticker."""
         ticker = self.config.ticker

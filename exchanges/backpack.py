@@ -529,6 +529,46 @@ class BackpackClient(BaseExchangeClient):
                 break
         return position_amt
 
+    @query_retry(reraise=True)
+    async def get_account_networth(self) -> Decimal:
+        """
+        Get account net worth (account balance + unrealized PnL).
+        
+        Returns:
+            Decimal: Account net worth for drawdown monitoring
+        """
+        try:
+            # Get account balance using Backpack SDK
+            balance_data = self.account_client.get_balances()
+            
+            # Get positions to calculate unrealized PnL
+            positions_data = self.account_client.get_open_positions()
+            
+            # Calculate total balance (USDC balance + unrealized PnL)
+            total_balance = Decimal('0')
+            
+            # Add USDC balance
+            if balance_data:
+                for balance in balance_data:
+                    if balance.get('token', '') == 'USDC':
+                        available = Decimal(str(balance.get('available', 0)))
+                        locked = Decimal(str(balance.get('locked', 0)))
+                        total_balance += available + locked
+                        break
+            
+            # Add unrealized PnL from positions
+            if positions_data:
+                for position in positions_data:
+                    unrealized_pnl = Decimal(str(position.get('unrealizedPnl', 0)))
+                    total_balance += unrealized_pnl
+            
+            self.logger.log(f"Account net worth: {total_balance}", "INFO")
+            return total_balance
+            
+        except Exception as e:
+            self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
+            return Decimal('0')
+
     async def get_contract_attributes(self) -> Tuple[str, Decimal]:
         """Get contract ID for a ticker."""
         ticker = self.config.ticker

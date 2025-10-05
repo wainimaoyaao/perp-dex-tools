@@ -534,6 +534,46 @@ class EdgeXClient(BaseExchangeClient):
                 position_amt = 0
         return position_amt
 
+    @query_retry(reraise=True)
+    async def get_account_networth(self) -> Decimal:
+        """
+        Get account net worth (account balance + unrealized PnL).
+        
+        Returns:
+            Decimal: Account net worth for drawdown monitoring
+        """
+        try:
+            # Get account balance using EdgeX SDK
+            balance_data = await self.client.get_account_balance()
+            
+            # Get positions to calculate unrealized PnL
+            positions_data = await self.client.get_account_positions()
+            
+            # Calculate total net worth
+            total_networth = Decimal('0')
+            
+            # Add account balance
+            if balance_data and 'data' in balance_data:
+                balance_info = balance_data['data']
+                # EdgeX typically returns balance in USD
+                available_balance = Decimal(str(balance_info.get('availableBalance', 0)))
+                total_networth += available_balance
+            
+            # Add unrealized PnL from positions
+            if positions_data and 'data' in positions_data:
+                positions = positions_data.get('data', {}).get('positionList', [])
+                for position in positions:
+                    if isinstance(position, dict):
+                        unrealized_pnl = Decimal(str(position.get('unrealizedPnl', 0)))
+                        total_networth += unrealized_pnl
+            
+            self.logger.log(f"Account net worth: {total_networth}", "INFO")
+            return total_networth
+            
+        except Exception as e:
+            self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
+            return Decimal('0')
+
     async def get_contract_attributes(self) -> Tuple[str, Decimal]:
         """Get contract ID for a ticker."""
         ticker = self.config.ticker

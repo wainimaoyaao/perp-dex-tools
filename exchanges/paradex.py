@@ -668,6 +668,20 @@ class ParadexClient(BaseExchangeClient):
             self.logger.log(f"Error fetching account equity: {e}", "ERROR")
             return 0.0
 
+    async def get_account_networth(self) -> Decimal:
+        """
+        Get account net worth (account balance + unrealized PnL).
+        
+        Returns:
+            Decimal: Account net worth for drawdown monitoring
+        """
+        try:
+            equity = await self.get_account_equity()
+            return Decimal(str(equity))
+        except Exception as e:
+            self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
+            return Decimal('0')
+
     async def get_unrealized_pnl_and_margin(self) -> Tuple[Decimal, Decimal]:
         """
         获取未实现盈亏和初始保证金，用于简化的亏损计算。

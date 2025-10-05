@@ -569,6 +569,19 @@ class GrvtClient(BaseExchangeClient):
             # Return 0 as fallback to avoid breaking the trading bot
             return Decimal('0')
 
+    async def get_account_networth(self) -> Decimal:
+        """
+        Get account net worth (account balance + unrealized PnL).
+        
+        Returns:
+            Decimal: Account net worth for drawdown monitoring
+        """
+        try:
+            return await self.get_account_equity()
+        except Exception as e:
+            self.logger.error(f"Error fetching account net worth: {e}")
+            return Decimal('0')
+
     @query_retry(reraise=True)
     async def get_unrealized_pnl_and_margin(self) -> Tuple[Decimal, Decimal]:
         """

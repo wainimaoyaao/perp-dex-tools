@@ -145,7 +145,8 @@ Assuming current ETH price is $2000 with take-profit set to 0.02%:
 - **Grid Control**: Ensures reasonable spacing between close orders via `grid-step`
 - **Order Frequency Control**: Controls order timing via `wait-time` to prevent being trapped in short periods
 - **Real-time Monitoring**: Continuously monitors positions and order status
-- **⚠️ No Stop Loss**: This strategy does not include stop-loss functionality and may face significant losses in adverse market conditions
+- **Drawdown Monitoring**: Optional intelligent drawdown monitoring system with multi-level risk alerts and automatic stop-loss
+- **⚠️ Basic Strategy No Stop Loss**: The basic strategy does not include stop-loss functionality, but risk management can be achieved through drawdown monitoring
 
 #### 📈 PnL and Margin Monitoring Features
 
@@ -182,6 +183,45 @@ The bot periodically records the following key metrics:
 - **Margin Monitoring**: Prevent forced liquidation due to insufficient margin
 - **Loss Alerts**: Provide warnings when position losses exceed preset thresholds
 - **Data Logging**: All PnL and margin data are recorded in logs
+
+#### 📉 Drawdown Monitoring Feature
+
+The bot now supports an intelligent drawdown monitoring system with multi-level risk alerts and automatic stop-loss functionality:
+
+##### 🎯 Monitoring Levels
+
+- **Light Drawdown (default 5%)**: Send notification alerts, continue normal trading
+- **Medium Drawdown (default 8%)**: Pause new orders, only allow closing positions
+- **Severe Drawdown (default 12%)**: Immediately stop all trading, trigger automatic stop-loss
+
+##### ⚙️ Configuration Parameters
+
+- `--enable-drawdown-monitor`: Enable drawdown monitoring feature
+- `--drawdown-light-threshold`: Light drawdown threshold (default 5.0%)
+- `--drawdown-medium-threshold`: Medium drawdown threshold (default 8.0%)
+- `--drawdown-severe-threshold`: Severe drawdown threshold (default 12.0%)
+
+##### 🔄 How It Works
+
+1. **Session Initialization**: Record initial net worth as baseline when trading starts
+2. **Real-time Monitoring**: Continuously get account net worth, calculate drawdown percentage relative to session peak
+3. **Smart Smoothing**: Use moving average algorithm to reduce false alarms from net worth fluctuations
+4. **Tiered Response**: Take different risk management measures based on drawdown severity
+5. **Auto Recovery**: Automatically resume normal trading when drawdown level decreases
+
+##### 📊 Monitoring Data
+
+- **Session Peak Net Worth**: Highest net worth achieved during the trading session
+- **Current Net Worth**: Real-time account net worth
+- **Drawdown Percentage**: (Peak Net Worth - Current Net Worth) / Peak Net Worth × 100%
+- **Smoothed Net Worth**: Net worth processed with moving average to reduce noise
+
+##### 🚨 Enhanced Risk Management
+
+- **Real-time Notifications**: Send drawdown alerts via Telegram/Lark
+- **Automatic Stop-loss**: Automatically stop trading during severe drawdowns
+- **Progressive Response**: Take different measures based on drawdown severity
+- **Session Reset**: Recalculate baseline net worth each time trading starts
 
 ## Sample commands:
 
@@ -246,6 +286,92 @@ BTC:
 ```bash
 python runbot.py --exchange grvt --ticker BTC --quantity 0.05 --take-profit 0.02 --max-orders 40 --wait-time 450
 ```
+
+### Detailed Drawdown Monitoring Guide:
+
+#### 📋 Available Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--enable-drawdown-monitor` | flag | False | Enable drawdown monitoring feature |
+| `--drawdown-light-threshold` | Decimal | 5 | Light drawdown warning threshold (%) |
+| `--drawdown-medium-threshold` | Decimal | 8 | Medium drawdown warning threshold (%) |
+| `--drawdown-severe-threshold` | Decimal | 12 | Severe drawdown stop-loss threshold (%) |
+
+#### 💡 Usage Examples
+
+##### 1. Enable with Default Thresholds
+```bash
+python runbot.py --exchange edgex --ticker ETH --quantity 0.1 --take-profit 0.02 --enable-drawdown-monitor
+```
+- Light drawdown: 5%
+- Medium drawdown: 8%
+- Severe drawdown: 12%
+
+##### 2. Conservative Strategy - Lower Thresholds
+```bash
+python runbot.py --exchange edgex --ticker ETH --quantity 0.1 --take-profit 0.02 --enable-drawdown-monitor \
+  --drawdown-light-threshold 3.0 \
+  --drawdown-medium-threshold 5.0 \
+  --drawdown-severe-threshold 8.0
+```
+Suitable for risk-averse traders, triggers protection mechanisms earlier.
+
+##### 3. Aggressive Strategy - Higher Thresholds
+```bash
+python runbot.py --exchange backpack --ticker ETH --quantity 0.1 --take-profit 0.02 --enable-drawdown-monitor \
+  --drawdown-light-threshold 8.0 \
+  --drawdown-medium-threshold 12.0 \
+  --drawdown-severe-threshold 18.0
+```
+Suitable for traders with higher risk tolerance, allows larger drawdowns.
+
+##### 4. Complete Trading Configuration Example
+```bash
+python runbot.py \
+  --exchange edgex \
+  --ticker BTC \
+  --quantity 0.05 \
+  --direction buy \
+  --max-orders 40 \
+  --wait-time 450 \
+  --enable-drawdown-monitor \
+  --drawdown-light-threshold 4.0 \
+  --drawdown-medium-threshold 7.0 \
+  --drawdown-severe-threshold 10.0
+```
+
+#### 🎯 Monitoring Behavior Details
+
+##### Light Drawdown
+- **Trigger Condition**: Current net worth drawdown relative to session peak reaches light threshold
+- **Behavior**: Log warning and send notification, trading continues normally
+- **Notification Content**: Includes current net worth, peak net worth, drawdown percentage, etc.
+
+##### Medium Drawdown
+- **Trigger Condition**: Drawdown reaches medium threshold
+- **Behavior**: Pause new order creation, only allow closing existing positions
+- **Recovery**: Automatically resume normal trading when drawdown falls below medium threshold
+
+##### Severe Drawdown
+- **Trigger Condition**: Drawdown reaches severe threshold
+- **Behavior**: Immediately stop all trading activities and gracefully exit the program
+- **Non-recoverable**: Manual program restart required to continue trading
+
+#### ⚠️ Important Notes
+
+1. **Threshold Order**: Must satisfy `light < medium < severe` relationship
+2. **Real-time Monitoring**: Drawdown monitoring occurs in real-time within the main trading loop
+3. **Net Worth Calculation**: Based on actual account net worth from the exchange
+4. **Session Peak**: Session peak is recalculated each time the program starts
+5. **Notification System**: Supports Telegram and Lark notifications (requires bot configuration)
+
+#### 🏆 Best Practices
+
+1. **First Use**: Recommend starting with conservative thresholds, gradually adjusting to suitable levels
+2. **Backtesting**: Validate threshold settings with historical data before live trading
+3. **Regular Adjustment**: Periodically adjust thresholds based on market conditions and trading performance
+4. **Monitor Logs**: Pay close attention to drawdown monitoring log output to understand trigger frequency and effectiveness
 
 ## Configuration
 
@@ -320,6 +446,10 @@ python runbot.py --exchange grvt --ticker BTC --quantity 0.05 --take-profit 0.02
 - `--stop-price`: When `direction` is 'buy', stop trading and exit the program when price >= stop-price; 'sell' logic is opposite (default: -1, no price-based termination). The purpose of this parameter is to prevent orders from being placed at "high points for long positions or low points for short positions that you consider".
 - `--pause-price`: When `direction` is 'buy', pause trading when price >= pause-price and resume trading when price falls back below pause-price; 'sell' logic is opposite (default: -1, no price-based pausing). The purpose of this parameter is to prevent orders from being placed at "high points for long positions or low points for short positions that you consider".
 - `--aster-boost`: Enable Boost mode for volume boosting on Aster exchange (only available for aster exchange)
+- `--enable-drawdown-monitor`: Enable drawdown monitoring feature (optional)
+- `--drawdown-light-threshold`: Light drawdown threshold, percentage (default 5.0)
+- `--drawdown-medium-threshold`: Medium drawdown threshold, percentage (default 8.0)
+- `--drawdown-severe-threshold`: Severe drawdown threshold, percentage (default 12.0)
   `--aster-boost` trading logic: Place maker orders to open positions, immediately close with taker orders after fill, repeat this cycle. Wear consists of one maker order, one taker order fees, and slippage.
 
 ## Logging

@@ -119,6 +119,17 @@ class BaseExchangeClient(ABC):
         pass
 
     @abstractmethod
+    async def get_account_networth(self) -> Decimal:
+        """
+        Get account net worth (account balance + unrealized PnL).
+        Used for drawdown monitoring.
+        
+        Returns:
+            Decimal: Current account net worth
+        """
+        pass
+
+    @abstractmethod
     def setup_order_update_handler(self, handler) -> None:
         """Setup order update handler for WebSocket."""
         pass

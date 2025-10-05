@@ -14,6 +14,7 @@ from exchanges import ExchangeFactory
 from helpers import TradingLogger
 from helpers.lark_bot import LarkBot
 from helpers.telegram_bot import TelegramBot
+from helpers.drawdown_monitor import DrawdownMonitor, DrawdownConfig
 
 
 @dataclass
@@ -32,8 +33,11 @@ class TradingConfig:
     stop_price: Decimal
     pause_price: Decimal
     aster_boost: bool
-    # 回撤控制参数
-    max_drawdown: Decimal  # 最大回撤百分比
+    # Drawdown monitoring parameters
+    enable_drawdown_monitor: bool = False
+    drawdown_light_threshold: Decimal = Decimal('5.0')  # 5% light warning
+    drawdown_medium_threshold: Decimal = Decimal('8.0')  # 8% medium warning
+    drawdown_severe_threshold: Decimal = Decimal('12.0')  # 12% severe stop-loss
 
     @property
     def close_order_side(self) -> str:
@@ -81,18 +85,28 @@ class TradingBot:
         self.current_order_status = None
         self.order_filled_event = asyncio.Event()
         self.order_canceled_event = asyncio.Event()
+        self.order_filled_amount = Decimal('0')  # Initialize order filled amount
         self.shutdown_requested = False
         self.loop = None
-        
-        # 回撤控制状态
-        self.peak_balance = Decimal('0')  # 账户余额峰值
-        self.current_balance = Decimal('0')  # 当前账户余额
-        self.drawdown_triggered = False  # 回撤是否已触发
         
         # 止损订单状态跟踪
         self.stop_loss_order_id = None  # 当前止损订单ID
         self.stop_loss_order_time = 0  # 止损订单下单时间
         self.stop_loss_monitoring = False  # 是否正在监控止损订单
+
+        # Initialize drawdown monitor if enabled
+        self.drawdown_monitor = None
+        if config.enable_drawdown_monitor:
+            drawdown_config = DrawdownConfig(
+                light_threshold=config.drawdown_light_threshold,
+                medium_threshold=config.drawdown_medium_threshold,
+                severe_threshold=config.drawdown_severe_threshold
+            )
+            self.drawdown_monitor = DrawdownMonitor(drawdown_config)
+            self.logger.log(f"Drawdown monitor enabled with thresholds: "
+                          f"Light={config.drawdown_light_threshold}%, "
+                          f"Medium={config.drawdown_medium_threshold}%, "
+                          f"Severe={config.drawdown_severe_threshold}%", "INFO")
 
         # Register order callback
         self._setup_websocket_handlers()
@@ -502,246 +516,11 @@ class TradingBot:
             with TelegramBot(telegram_token, telegram_chat_id) as tg_bot:
                 tg_bot.send_text(message)
 
-    async def _check_loss_percentage(self) -> bool:
-        """检查基于未实现盈亏和保证金的亏损百分比。返回True表示需要止损。
-        只有在达到最大订单数后才会触发止损检查。"""
-        try:
-            # 检查是否达到最大订单数，只有达到最大订单数后才进行止损检查
-            if len(self.active_close_orders) < self.config.max_orders:
-                return False
-            
-            # 获取未实现盈亏和已使用保证金
-            if hasattr(self.exchange_client, 'get_unrealized_pnl_and_margin'):
-                unrealized_pnl, used_margin = await self.exchange_client.get_unrealized_pnl_and_margin()
-                
-                # 计算亏损百分比：亏损 / 已使用保证金 * 100
-                if used_margin > 0 and unrealized_pnl < 0:
-                    loss_percentage = abs(unrealized_pnl) / used_margin * 100
-                    
-                    # 检查是否达到亏损阈值
-                    if loss_percentage >= self.config.max_drawdown:
-                        self.logger.log(f"亏损百分比触发止损！当前订单数: {len(self.active_close_orders)}/{self.config.max_orders}, 未实现盈亏: {unrealized_pnl}, 已使用保证金: {used_margin}, 亏损百分比: {loss_percentage:.2f}%", "WARNING")
-                        return True
-                    
-                    # 记录监控信息（每分钟记录一次）
-                    if time.time() - self.last_log_time > 60:
-                        self.logger.log(f"亏损监控 - 订单数: {len(self.active_close_orders)}/{self.config.max_orders}, 未实现盈亏: {unrealized_pnl}, 已使用保证金: {used_margin}, 亏损百分比: {loss_percentage:.2f}%", "INFO")
-                        self.last_log_time = time.time()
-                else:
-                    # 如果没有亏损或没有保证金使用，记录状态
-                    if time.time() - self.last_log_time > 60:
-                        self.logger.log(f"亏损监控 - 订单数: {len(self.active_close_orders)}/{self.config.max_orders}, 未实现盈亏: {unrealized_pnl}, 已使用保证金: {used_margin} (无亏损)", "INFO")
-                        self.last_log_time = time.time()
-            else:
-                # 对于不支持 get_unrealized_pnl_and_margin 的交易所，使用原有逻辑
-                self.logger.log("交易所不支持未实现盈亏和保证金监控，跳过亏损检查", "WARNING")
-            
-            return False
-            
-        except Exception as e:
-            self.logger.log(f"检查亏损百分比时出错: {e}", "ERROR")
-            return False
 
-    async def _emergency_stop_loss(self):
-        """紧急止损：取消所有挂单并限价平仓所有持仓"""
-        try:
-            self.logger.log("开始执行紧急止损...", "WARNING")
-            
-            # 1. 取消所有活跃的止盈单
-            cancel_tasks = []
-            for order in self.active_close_orders:
-                order_id = order.get('id')
-                if order_id:
-                    cancel_tasks.append(self.exchange_client.cancel_order(order_id))
-            
-            if cancel_tasks:
-                self.logger.log(f"取消 {len(cancel_tasks)} 个挂单...", "INFO")
-                await asyncio.gather(*cancel_tasks, return_exceptions=True)
-                await asyncio.sleep(2)  # 等待取消完成
-            
-            # 2. 获取当前持仓并限价平仓
-            position_amt = await self.exchange_client.get_account_positions()
-            if abs(position_amt) > 0:
-                # 确定平仓方向
-                close_side = 'sell' if position_amt > 0 else 'buy'
-                close_quantity = abs(position_amt)
-                
-                # 获取当前市价
-                current_price = await self.exchange_client.get_current_price()
-                
-                # 计算限价平仓价格（稍微有利的价格确保快速成交）
-                if close_side == 'sell':
-                    # 卖出时，价格稍微低一点确保快速成交
-                    close_price = current_price * Decimal('0.999')  # 降低0.1%
-                else:
-                    # 买入时，价格稍微高一点确保快速成交
-                    close_price = current_price * Decimal('1.001')  # 提高0.1%
-                
-                # 调整价格精度
-                close_price = self.exchange_client.round_price(close_price)
-                
-                self.logger.log(f"限价平仓: {close_side} {close_quantity} @ {close_price}", "WARNING")
-                
-                # 限价平仓
-                close_result = await self.exchange_client.place_limit_order(
-                    self.config.contract_id,
-                    close_quantity,
-                    close_price,
-                    close_side
-                )
-                
-                if close_result.success:
-                    # 记录止损订单ID和状态
-                    self.stop_loss_order_id = close_result.order_id
-                    self.stop_loss_order_time = time.time()
-                    self.stop_loss_monitoring = True
-                    self.logger.log(f"限价止损订单已下达，订单ID: {self.stop_loss_order_id}", "INFO")
-                else:
-                    self.logger.log(f"限价止损订单下达失败: {close_result.error_message}", "ERROR")
-            else:
-                self.logger.log("无持仓需要平仓", "INFO")
-            
-            # 3. 设置触发状态
-            self.drawdown_triggered = True
-            
-            # 4. 获取亏损信息用于通知
-            loss_info = ""
-            try:
-                if hasattr(self.exchange_client, 'get_unrealized_pnl_and_margin'):
-                    unrealized_pnl, used_margin = await self.exchange_client.get_unrealized_pnl_and_margin()
-                    if used_margin > 0 and unrealized_pnl < 0:
-                        loss_percentage = abs(unrealized_pnl) / used_margin * 100
-                        loss_info = f"未实现盈亏: {unrealized_pnl}\n已使用保证金: {used_margin}\n亏损百分比: {loss_percentage:.2f}%\n"
-            except Exception as e:
-                self.logger.log(f"获取亏损信息失败: {e}", "ERROR")
-            
-            # 5. 发送通知
-            message = f"\n🚨 亏损止损触发 🚨\n"
-            message += f"交易所: {self.config.exchange.upper()}\n"
-            message += f"交易对: {self.config.ticker.upper()}\n"
-            message += loss_info
-            message += f"止损阈值: {self.config.max_drawdown}%\n"
-            message += "所有挂单已取消，已下达限价止损订单\n"
-            message += "程序将在平仓完成后自动停止"
-            
-            await self.send_notification(message)
-            
-        except Exception as e:
-            self.logger.log(f"紧急止损执行失败: {e}", "ERROR")
-            self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
 
-    async def _monitor_stop_loss_order(self):
-        """监控止损订单状态，如果3秒内未成交则重新挂单"""
-        if not self.stop_loss_monitoring or not self.stop_loss_order_id:
-            return
-        
-        try:
-            # 检查订单是否已经超过3秒
-            elapsed_time = time.time() - self.stop_loss_order_time
-            if elapsed_time < 3:
-                return
-            
-            # 检查订单状态
-            order_status = await self.exchange_client.get_order_status(self.stop_loss_order_id)
-            
-            if order_status and order_status.get('status') == 'filled':
-                # 订单已成交，检查持仓并停止程序
-                self.logger.log(f"止损订单已成交: {self.stop_loss_order_id}", "INFO")
-                self.stop_loss_monitoring = False
-                self.stop_loss_order_id = None
-                self.stop_loss_order_time = 0
-                
-                # 等待2秒确保订单状态更新
-                await asyncio.sleep(2)
-                
-                # 检查当前持仓
-                position_amt = await self.exchange_client.get_account_positions()
-                
-                # 发送通知并停止程序
-                message = f"\n✅ 止损平仓完成 ✅\n"
-                message += f"交易所: {self.config.exchange.upper()}\n"
-                message += f"交易对: {self.config.ticker.upper()}\n"
-                message += f"当前持仓: {position_amt}\n"
-                if abs(position_amt) == 0:
-                    message += "✅ 已完全平仓，程序将自动停止"
-                    self.logger.log("止损平仓完成，已完全平仓，程序将自动停止", "INFO")
-                else:
-                    message += f"⚠️ 仍有持仓 {position_amt}，程序将自动停止"
-                    self.logger.log(f"止损平仓完成，仍有持仓 {position_amt}，程序将自动停止", "WARNING")
-                
-                await self.send_notification(message)
-                await self.graceful_shutdown("止损平仓完成")
-                return
-            
-            # 订单未成交，取消并重新挂单
-            self.logger.log(f"止损订单 {self.stop_loss_order_id} 超过3秒未成交，重新挂单", "WARNING")
-            
-            # 取消当前订单
-            try:
-                await self.exchange_client.cancel_order(self.stop_loss_order_id)
-                await asyncio.sleep(1)  # 等待取消完成
-            except Exception as e:
-                self.logger.log(f"取消止损订单失败: {e}", "ERROR")
-            
-            # 获取当前持仓并重新挂限价单
-            position_amt = await self.exchange_client.get_account_positions()
-            if abs(position_amt) > 0:
-                # 确定平仓方向
-                close_side = 'sell' if position_amt > 0 else 'buy'
-                close_quantity = abs(position_amt)
-                
-                # 获取当前市价
-                current_price = await self.exchange_client.get_current_price()
-                
-                # 计算限价平仓价格（稍微有利的价格确保快速成交）
-                if close_side == 'sell':
-                    # 卖出时，价格稍微低一点确保快速成交
-                    close_price = current_price * Decimal('0.999')  # 降低0.1%
-                else:
-                    # 买入时，价格稍微高一点确保快速成交
-                    close_price = current_price * Decimal('1.001')  # 提高0.1%
-                
-                # 调整价格精度
-                close_price = self.exchange_client.round_price(close_price)
-                
-                self.logger.log(f"重新挂止损单: {close_side} {close_quantity} @ {close_price}", "WARNING")
-                
-                # 重新下限价单
-                close_result = await self.exchange_client.place_limit_order(
-                    self.config.contract_id,
-                    close_quantity,
-                    close_price,
-                    close_side
-                )
-                
-                if close_result.success:
-                    # 更新止损订单信息
-                    self.stop_loss_order_id = close_result.order_id
-                    self.stop_loss_order_time = time.time()
-                    self.logger.log(f"止损订单重新下达成功，订单ID: {self.stop_loss_order_id}", "INFO")
-                else:
-                    self.logger.log(f"重新下达止损订单失败: {close_result.error_message}", "ERROR")
-                    self.stop_loss_monitoring = False
-            else:
-                # 无持仓，发送通知并停止程序
-                self.logger.log("无持仓需要平仓，程序将自动停止", "INFO")
-                self.stop_loss_monitoring = False
-                self.stop_loss_order_id = None
-                self.stop_loss_order_time = 0
-                
-                # 发送通知并停止程序
-                message = f"\n✅ 止损检查完成 ✅\n"
-                message += f"交易所: {self.config.exchange.upper()}\n"
-                message += f"交易对: {self.config.ticker.upper()}\n"
-                message += "当前无持仓需要平仓\n"
-                message += "✅ 程序将自动停止"
-                
-                await self.send_notification(message)
-                await self.graceful_shutdown("无持仓需要平仓")
-                
-        except Exception as e:
-            self.logger.log(f"监控止损订单时出错: {e}", "ERROR")
-            self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
+
+
+
 
 
 
@@ -764,7 +543,7 @@ class TradingBot:
             self.logger.log(f"Stop Price: {self.config.stop_price}", "INFO")
             self.logger.log(f"Pause Price: {self.config.pause_price}", "INFO")
             self.logger.log(f"Aster Boost: {self.config.aster_boost}", "INFO")
-            self.logger.log(f"Max Drawdown: {self.config.max_drawdown}%", "INFO")
+
             self.logger.log("=============================", "INFO")
 
             # Capture the running event loop for thread-safe callbacks
@@ -775,10 +554,81 @@ class TradingBot:
             # wait for connection to establish
             await asyncio.sleep(5)
 
+            # Initialize drawdown monitor session if enabled
+            if self.drawdown_monitor:
+                try:
+                    initial_networth = await self.exchange_client.get_account_networth()
+                    self.drawdown_monitor.start_session(initial_networth)
+                    self.logger.log(f"Drawdown monitor session started with initial net worth: {initial_networth}", "INFO")
+                except Exception as e:
+                    self.logger.log(f"Failed to initialize drawdown monitor: {e}", "ERROR")
+                    self.drawdown_monitor = None  # Disable if initialization fails
+
             # Main trading loop
             while not self.shutdown_requested:
-                # 监控止损订单状态（如果有的话）
-                await self._monitor_stop_loss_order()
+                
+                # Check drawdown if monitor is enabled
+                if self.drawdown_monitor:
+                    try:
+                        current_networth = await self.exchange_client.get_account_networth()
+                        drawdown_level = self.drawdown_monitor.update_networth(current_networth)
+                        
+                        if drawdown_level:
+                            drawdown_percentage = self.drawdown_monitor.get_drawdown_percentage()
+                            session_peak = self.drawdown_monitor.session_peak_networth
+                            
+                            if drawdown_level.name == "SEVERE":
+                                # Severe drawdown - stop trading immediately
+                                msg = f"\n\n🚨 SEVERE DRAWDOWN ALERT 🚨\n"
+                                msg += f"Exchange: {self.config.exchange.upper()}\n"
+                                msg += f"Ticker: {self.config.ticker.upper()}\n"
+                                msg += f"Session Peak Net Worth: {session_peak}\n"
+                                msg += f"Current Net Worth: {current_networth}\n"
+                                msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
+                                msg += f"Threshold: {self.config.drawdown_severe_threshold}%\n"
+                                msg += "Trading stopped due to severe drawdown!\n"
+                                msg += "严重回撤，交易已停止！\n"
+                                
+                                self.logger.log(msg, "ERROR")
+                                await self.send_notification(msg)
+                                await self.graceful_shutdown("Severe drawdown triggered")
+                                break
+                                
+                            elif drawdown_level.name == "MEDIUM":
+                                # Medium drawdown - pause new orders
+                                msg = f"⚠️ MEDIUM DRAWDOWN WARNING ⚠️\n"
+                                msg += f"Exchange: {self.config.exchange.upper()}\n"
+                                msg += f"Ticker: {self.config.ticker.upper()}\n"
+                                msg += f"Session Peak Net Worth: {session_peak}\n"
+                                msg += f"Current Net Worth: {current_networth}\n"
+                                msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
+                                msg += f"Threshold: {self.config.drawdown_medium_threshold}%\n"
+                                msg += "Pausing new orders, allowing only position closing\n"
+                                msg += "中等回撤警告，暂停新订单，仅允许平仓\n"
+                                
+                                self.logger.log(msg, "WARNING")
+                                await self.send_notification(msg)
+                                # Skip to next iteration to pause new orders
+                                await asyncio.sleep(5)
+                                continue
+                                
+                            elif drawdown_level.name == "LIGHT":
+                                # Light drawdown - just log and notify
+                                msg = f"💡 LIGHT DRAWDOWN NOTICE 💡\n"
+                                msg += f"Exchange: {self.config.exchange.upper()}\n"
+                                msg += f"Ticker: {self.config.ticker.upper()}\n"
+                                msg += f"Session Peak Net Worth: {session_peak}\n"
+                                msg += f"Current Net Worth: {current_networth}\n"
+                                msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
+                                msg += f"Threshold: {self.config.drawdown_light_threshold}%\n"
+                                msg += "Light drawdown detected, monitoring closely\n"
+                                msg += "轻微回撤提醒，密切监控中\n"
+                                
+                                self.logger.log(msg, "WARNING")
+                                await self.send_notification(msg)
+                                
+                    except Exception as e:
+                        self.logger.log(f"Error in drawdown monitoring: {e}", "ERROR")
                 
                 # Update active orders
                 active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
@@ -793,11 +643,7 @@ class TradingBot:
                             'size': order.size
                         })
 
-                # 2. 检查回撤控制（在获取订单信息后）
-                drawdown_triggered = await self._check_loss_percentage()
-                if drawdown_triggered:
-                    await self._emergency_stop_loss()
-                    continue  # 止损后继续循环，等待平仓完成
+
 
                 # Periodic logging
                 mismatch_detected = await self._log_status_periodically()
