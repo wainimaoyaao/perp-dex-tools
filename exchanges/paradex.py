@@ -650,9 +650,9 @@ class ParadexClient(BaseExchangeClient):
                     break
             
             # Extract other information from account summary
-            account_value = float(account_summary.get('account_value', 0))
-            collateral_value = float(account_summary.get('collateral_value', 0))
-            free_collateral = float(account_summary.get('free_collateral', 0))
+            account_value = float(getattr(account_summary, 'account_value', 0))
+            collateral_value = float(getattr(account_summary, 'collateral_value', 0))
+            free_collateral = float(getattr(account_summary, 'free_collateral', 0))
             
             return {
                 'usdc_balance': usdc_balance,
@@ -676,7 +676,7 @@ class ParadexClient(BaseExchangeClient):
         """Get account equity (account value)."""
         try:
             account_summary = await self._fetch_account_summary_with_retry()
-            return float(account_summary.get('account_value', 0))
+            return float(getattr(account_summary, 'account_value', 0))
         except Exception as e:
             self.logger.log(f"Error fetching account equity: {e}", "ERROR")
             return 0.0
@@ -716,7 +716,7 @@ class ParadexClient(BaseExchangeClient):
                     total_unrealized_pnl += Decimal(str(position['unrealized_pnl']))
             
             # 从账户摘要中提取初始保证金
-            initial_margin = Decimal(str(account_summary.get('initial_margin_requirement', 0)))
+            initial_margin = Decimal(str(getattr(account_summary, 'initial_margin_requirement', 0)))
             
             return total_unrealized_pnl, initial_margin
             
