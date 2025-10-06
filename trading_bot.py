@@ -102,7 +102,7 @@ class TradingBot:
                 medium_warning_threshold=config.drawdown_medium_threshold / 100,
                 severe_stop_loss_threshold=config.drawdown_severe_threshold / 100
             )
-            self.drawdown_monitor = DrawdownMonitor(drawdown_config)
+            self.drawdown_monitor = DrawdownMonitor(drawdown_config, self.logger)
             self.logger.log(f"Drawdown monitor enabled with thresholds: "
                           f"Light={config.drawdown_light_threshold}%, "
                           f"Medium={config.drawdown_medium_threshold}%, "
