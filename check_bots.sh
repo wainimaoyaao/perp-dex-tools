@@ -22,8 +22,8 @@ echo -e "${BLUE}工作目录: $SCRIPT_DIR${NC}"
 echo -e "\n${GREEN}=== 虚拟环境状态 ===${NC}"
 if [ -d "./env" ]; then
     echo -e "${GREEN}✅ env 虚拟环境存在${NC}"
-    if [ -f "./env/bin/python" ]; then
-        ENV_PYTHON_VERSION=$(./env/bin/python --version 2>&1)
+    if [ -f "./env/bin/python3" ]; then
+        ENV_PYTHON_VERSION=$(./env/bin/python3 --version 2>&1)
         echo -e "${CYAN}   Python 版本: $ENV_PYTHON_VERSION${NC}"
     fi
 else
@@ -32,8 +32,8 @@ fi
 
 if [ -d "./para_env" ]; then
     echo -e "${GREEN}✅ para_env 虚拟环境存在${NC}"
-    if [ -f "./para_env/bin/python" ]; then
-        PARA_PYTHON_VERSION=$(./para_env/bin/python --version 2>&1)
+    if [ -f "./para_env/bin/python3" ]; then
+        PARA_PYTHON_VERSION=$(./para_env/bin/python3 --version 2>&1)
         echo -e "${CYAN}   Python 版本: $PARA_PYTHON_VERSION${NC}"
     fi
 else

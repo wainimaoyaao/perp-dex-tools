@@ -19,13 +19,13 @@ cd "$SCRIPT_DIR"
 echo -e "${BLUE}工作目录: $SCRIPT_DIR${NC}"
 
 # 检查虚拟环境是否存在
-if [ ! -f "./env/bin/python" ]; then
+if [ ! -f "./env/bin/python3" ]; then
     echo -e "${RED}错误: 虚拟环境 'env' 不存在!${NC}"
     echo -e "${YELLOW}请运行: python3 -m venv env${NC}"
     exit 1
 fi
 
-if [ ! -f "./para_env/bin/python" ]; then
+if [ ! -f "./para_env/bin/python3" ]; then
     echo -e "${RED}错误: 虚拟环境 'para_env' 不存在!${NC}"
     echo -e "${YELLOW}请运行: python3 -m venv para_env${NC}"
     exit 1
@@ -40,7 +40,7 @@ fi
 echo -e "${YELLOW}启动 Paradex 交易机器人 (使用 para_env)...${NC}"
 
 # 启动 Paradex 机器人 (使用 para_env)
-nohup ./para_env/bin/python runbot.py \
+nohup ./para_env/bin/python3 runbot.py \
     --exchange paradex \
     --ticker BTC \
     --quantity 0.002 \
@@ -60,7 +60,7 @@ sleep 1
 echo -e "${YELLOW}启动 GRVT 交易机器人 (使用 env)...${NC}"
 
 # 启动 GRVT 机器人 (使用 env)
-nohup ./env/bin/python runbot.py \
+nohup ./env/bin/python3 runbot.py \
     --exchange grvt \
     --ticker BTC \
     --quantity 0.002 \
