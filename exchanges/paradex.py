@@ -592,11 +592,8 @@ class ParadexClient(BaseExchangeClient):
                 try:
                     account_response = self.paradex.api_client.fetch_account()
                 except AttributeError:
-                    try:
-                        account_response = self.paradex.api_client.fetch_current_summary_for_this_account()
-                    except AttributeError:
-                        self.logger.log("No valid account summary method found in Paradex API", "ERROR")
-                        raise ValueError("No valid account summary method found in Paradex API")
+                    self.logger.log("No valid account summary method found in Paradex API", "ERROR")
+                    raise ValueError("No valid account summary method found in Paradex API")
         
         if not account_response:
             self.logger.log("Failed to get account summary", "ERROR")
