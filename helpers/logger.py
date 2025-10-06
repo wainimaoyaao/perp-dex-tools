@@ -93,6 +93,22 @@ class TradingLogger:
         else:
             self.logger.info(formatted_message)
 
+    def error(self, message: str):
+        """Log an error message."""
+        self.log(message, "ERROR")
+
+    def info(self, message: str):
+        """Log an info message."""
+        self.log(message, "INFO")
+
+    def warning(self, message: str):
+        """Log a warning message."""
+        self.log(message, "WARNING")
+
+    def debug(self, message: str):
+        """Log a debug message."""
+        self.log(message, "DEBUG")
+
     def log_transaction(self, order_id: str, side: str, quantity: Decimal, price: Decimal, status: str):
         """Log a transaction to CSV file."""
         try:
