@@ -131,10 +131,10 @@ class DrawdownMonitor:
         smoothed_networth = sum(self.networth_history) / Decimal(len(self.networth_history))
         self.current_networth = smoothed_networth
         
-        # 更新会话峰值
-        if smoothed_networth > self.session_peak_networth:
-            self.session_peak_networth = smoothed_networth
-            self.logger.log(f"New session peak net worth: ${self.session_peak_networth}", "INFO")
+        # 更新会话峰值（使用原始净值，不是平滑值）
+        if current_networth > self.session_peak_networth:
+            self.session_peak_networth = current_networth
+            self.logger.log(f"New session peak net worth: ${self.session_peak_networth} (raw: ${current_networth}, smoothed: ${smoothed_networth})", "INFO")
         
         # 计算回撤率
         drawdown_rate = self._calculate_drawdown_rate()
@@ -150,7 +150,8 @@ class DrawdownMonitor:
         self.last_update_time = current_time
         
         # 记录当前状态
-        self.logger.log(f"Net worth update - Current: ${smoothed_networth}, "
+        self.logger.log(f"Net worth update - Raw: ${current_networth}, "
+                       f"Smoothed: ${smoothed_networth}, "
                        f"Peak: ${self.session_peak_networth}, "
                        f"Drawdown: {drawdown_rate*100:.2f}%, "
                        f"Level: {new_level.value}", "DEBUG")
