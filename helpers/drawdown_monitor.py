@@ -234,6 +234,14 @@ class DrawdownMonitor:
             }
         }
     
+    def get_drawdown_percentage(self) -> float:
+        """获取当前回撤百分比"""
+        if not self.is_monitoring:
+            return 0.0
+        
+        drawdown_rate = self._calculate_drawdown_rate()
+        return float(drawdown_rate * 100)
+    
     def stop_monitoring(self):
         """停止监控"""
         self.is_monitoring = False

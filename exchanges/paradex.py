@@ -581,7 +581,20 @@ class ParadexClient(BaseExchangeClient):
     )
     async def _fetch_account_summary_with_retry(self) -> Dict[str, Any]:
         """Get account summary using official SDK."""
-        account_response = self.paradex.api_client.fetch_current_summary_for_this_account()
+        try:
+            # Try the correct method name for Paradex SDK
+            account_response = self.paradex.api_client.fetch_account_summary()
+        except AttributeError:
+            # Fallback to alternative method names
+            try:
+                account_response = self.paradex.api_client.get_account_summary()
+            except AttributeError:
+                try:
+                    account_response = self.paradex.api_client.fetch_account()
+                except AttributeError:
+                    self.logger.log("No valid account summary method found in Paradex API", "ERROR")
+                    raise ValueError("No valid account summary method found in Paradex API")
+        
         if not account_response:
             self.logger.log("Failed to get account summary", "ERROR")
             raise ValueError("Failed to get account summary")
