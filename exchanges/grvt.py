@@ -577,7 +577,47 @@ class GrvtClient(BaseExchangeClient):
             Decimal: Account net worth for drawdown monitoring
         """
         try:
-            return await self.get_account_equity()
+            # 直接调用get_account_equity的内部逻辑，避免query_retry装饰器的reraise
+            # Get account summary which includes equity and unrealized PnL
+            account_summary = self.rest_client.get_account_summary(type='sub-account')
+            
+            # Extract equity from account summary
+            # GRVT account summary typically includes 'equity' field
+            if 'equity' in account_summary:
+                equity = Decimal(str(account_summary['equity']))
+                self.logger.info(f"Account net worth from summary: {equity}")
+                return equity
+            
+            # Fallback: try to get balance and calculate equity
+            balance_info = self.rest_client.fetch_balance(type='sub-account')
+            
+            # CCXT format balance includes 'total' which represents equity
+            if 'total' in balance_info and 'USDT' in balance_info['total']:
+                equity = Decimal(str(balance_info['total']['USDT']))
+                self.logger.info(f"Account net worth from balance total: {equity}")
+                return equity
+            
+            # Another fallback: calculate from positions
+            positions = self.rest_client.fetch_positions()
+            total_equity = Decimal('0')
+            
+            for position in positions:
+                # Add unrealized PnL from each position
+                if 'unrealizedPnl' in position:
+                    unrealized_pnl = Decimal(str(position.get('unrealizedPnl', 0)))
+                    total_equity += unrealized_pnl
+                elif 'unrealized_pnl' in position:
+                    unrealized_pnl = Decimal(str(position.get('unrealized_pnl', 0)))
+                    total_equity += unrealized_pnl
+            
+            # Add available balance
+            if 'free' in balance_info and 'USDT' in balance_info['free']:
+                free_balance = Decimal(str(balance_info['free']['USDT']))
+                total_equity += free_balance
+            
+            self.logger.info(f"Calculated account net worth: {total_equity}")
+            return total_equity
+            
         except Exception as e:
             self.logger.error(f"Error fetching account net worth: {e}")
             return Decimal('0')

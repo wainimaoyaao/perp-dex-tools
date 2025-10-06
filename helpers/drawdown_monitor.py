@@ -79,6 +79,11 @@ class DrawdownMonitor:
         Args:
             initial_networth: 初始净值
         """
+        # 如果初始净值为None或无效，使用0作为默认值
+        if initial_networth is None:
+            initial_networth = Decimal("0")
+            self.logger.log("Warning: Initial net worth is None, using 0 as default", "WARNING")
+        
         self.initial_networth = initial_networth
         self.session_peak_networth = initial_networth
         self.current_networth = initial_networth
@@ -105,6 +110,11 @@ class DrawdownMonitor:
         """
         if not self.is_monitoring or self.stop_loss_triggered:
             return False
+        
+        # 如果当前净值为None，记录警告并跳过更新
+        if current_networth is None:
+            self.logger.log("Warning: Current net worth is None, skipping update", "WARNING")
+            return True
         
         current_time = time.time()
         
@@ -151,6 +161,10 @@ class DrawdownMonitor:
     def _calculate_drawdown_rate(self) -> Decimal:
         """计算当前回撤率"""
         if not self.session_peak_networth or self.session_peak_networth <= 0:
+            return Decimal("0")
+        
+        # 确保current_networth不为None
+        if self.current_networth is None:
             return Decimal("0")
         
         drawdown = self.session_peak_networth - self.current_networth
