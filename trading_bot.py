@@ -571,61 +571,69 @@ class TradingBot:
                 if self.drawdown_monitor:
                     try:
                         current_networth = await self.exchange_client.get_account_networth()
-                        drawdown_level = self.drawdown_monitor.update_networth(current_networth)
+                        should_continue = self.drawdown_monitor.update_networth(current_networth)
                         
-                        if drawdown_level:
+                        # Check if stop loss was triggered
+                        if not should_continue or self.drawdown_monitor.is_stop_loss_triggered():
                             drawdown_percentage = self.drawdown_monitor.get_drawdown_percentage()
                             session_peak = self.drawdown_monitor.session_peak_networth
                             
-                            if drawdown_level.name == "SEVERE":
-                                # Severe drawdown - stop trading immediately
-                                msg = f"\n\n🚨 SEVERE DRAWDOWN ALERT 🚨\n"
-                                msg += f"Exchange: {self.config.exchange.upper()}\n"
-                                msg += f"Ticker: {self.config.ticker.upper()}\n"
-                                msg += f"Session Peak Net Worth: {session_peak}\n"
-                                msg += f"Current Net Worth: {current_networth}\n"
-                                msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
-                                msg += f"Threshold: {self.config.drawdown_severe_threshold}%\n"
-                                msg += "Trading stopped due to severe drawdown!\n"
-                                msg += "严重回撤，交易已停止！\n"
-                                
-                                self.logger.log(msg, "ERROR")
-                                await self.send_notification(msg)
-                                await self.graceful_shutdown("Severe drawdown triggered")
-                                break
-                                
-                            elif drawdown_level.name == "MEDIUM":
-                                # Medium drawdown - pause new orders
-                                msg = f"⚠️ MEDIUM DRAWDOWN WARNING ⚠️\n"
-                                msg += f"Exchange: {self.config.exchange.upper()}\n"
-                                msg += f"Ticker: {self.config.ticker.upper()}\n"
-                                msg += f"Session Peak Net Worth: {session_peak}\n"
-                                msg += f"Current Net Worth: {current_networth}\n"
-                                msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
-                                msg += f"Threshold: {self.config.drawdown_medium_threshold}%\n"
-                                msg += "Pausing new orders, allowing only position closing\n"
-                                msg += "中等回撤警告，暂停新订单，仅允许平仓\n"
-                                
-                                self.logger.log(msg, "WARNING")
-                                await self.send_notification(msg)
-                                # Skip to next iteration to pause new orders
-                                await asyncio.sleep(5)
-                                continue
-                                
-                            elif drawdown_level.name == "LIGHT":
-                                # Light drawdown - just log and notify
-                                msg = f"💡 LIGHT DRAWDOWN NOTICE 💡\n"
-                                msg += f"Exchange: {self.config.exchange.upper()}\n"
-                                msg += f"Ticker: {self.config.ticker.upper()}\n"
-                                msg += f"Session Peak Net Worth: {session_peak}\n"
-                                msg += f"Current Net Worth: {current_networth}\n"
-                                msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
-                                msg += f"Threshold: {self.config.drawdown_light_threshold}%\n"
-                                msg += "Light drawdown detected, monitoring closely\n"
-                                msg += "轻微回撤提醒，密切监控中\n"
-                                
-                                self.logger.log(msg, "WARNING")
-                                await self.send_notification(msg)
+                            # Severe drawdown - stop trading immediately
+                            msg = f"\n\n🚨 SEVERE DRAWDOWN ALERT 🚨\n"
+                            msg += f"Exchange: {self.config.exchange.upper()}\n"
+                            msg += f"Ticker: {self.config.ticker.upper()}\n"
+                            msg += f"Session Peak Net Worth: {session_peak}\n"
+                            msg += f"Current Net Worth: {current_networth}\n"
+                            msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
+                            msg += f"Threshold: {self.config.drawdown_severe_threshold}%\n"
+                            msg += "Trading stopped due to severe drawdown!\n"
+                            msg += "严重回撤，交易已停止！\n"
+                            
+                            self.logger.log(msg, "ERROR")
+                            await self.send_notification(msg)
+                            await self.graceful_shutdown("Severe drawdown triggered")
+                            break
+                        
+                        # Check current drawdown level for warnings
+                        current_level = self.drawdown_monitor.current_level
+                        if current_level.value == "medium_warning":
+                            drawdown_percentage = self.drawdown_monitor.get_drawdown_percentage()
+                            session_peak = self.drawdown_monitor.session_peak_networth
+                            
+                            # Medium drawdown - pause new orders
+                            msg = f"⚠️ MEDIUM DRAWDOWN WARNING ⚠️\n"
+                            msg += f"Exchange: {self.config.exchange.upper()}\n"
+                            msg += f"Ticker: {self.config.ticker.upper()}\n"
+                            msg += f"Session Peak Net Worth: {session_peak}\n"
+                            msg += f"Current Net Worth: {current_networth}\n"
+                            msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
+                            msg += f"Threshold: {self.config.drawdown_medium_threshold}%\n"
+                            msg += "Pausing new orders, allowing only position closing\n"
+                            msg += "中等回撤警告，暂停新订单，仅允许平仓\n"
+                            
+                            self.logger.log(msg, "WARNING")
+                            await self.send_notification(msg)
+                            # Skip to next iteration to pause new orders
+                            await asyncio.sleep(5)
+                            continue
+                        
+                        elif current_level.value == "light_warning":
+                            drawdown_percentage = self.drawdown_monitor.get_drawdown_percentage()
+                            session_peak = self.drawdown_monitor.session_peak_networth
+                            
+                            # Light drawdown - just log and notify
+                            msg = f"💡 LIGHT DRAWDOWN NOTICE 💡\n"
+                            msg += f"Exchange: {self.config.exchange.upper()}\n"
+                            msg += f"Ticker: {self.config.ticker.upper()}\n"
+                            msg += f"Session Peak Net Worth: {session_peak}\n"
+                            msg += f"Current Net Worth: {current_networth}\n"
+                            msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
+                            msg += f"Threshold: {self.config.drawdown_light_threshold}%\n"
+                            msg += "Light drawdown detected, monitoring closely\n"
+                            msg += "轻微回撤提醒，密切监控中\n"
+                            
+                            self.logger.log(msg, "WARNING")
+                            await self.send_notification(msg)
                                 
                     except Exception as e:
                         self.logger.log(f"Error in drawdown monitoring: {e}", "ERROR")
