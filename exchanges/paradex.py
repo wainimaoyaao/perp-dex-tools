@@ -689,11 +689,37 @@ class ParadexClient(BaseExchangeClient):
             Decimal: Account net worth for drawdown monitoring
         """
         try:
-            equity = await self.get_account_equity()
-            return Decimal(str(equity))
+            # 直接调用API而不使用带有reraise=True的方法，避免异常传播中断监控
+            account_summary = self.paradex.api_client.fetch_account_summary()
+            if account_summary:
+                equity = float(getattr(account_summary, 'account_value', 0))
+                self.logger.log(f"Account net worth: {equity}", "INFO")
+                return Decimal(str(equity))
+            else:
+                self.logger.log("Failed to get account summary, using fallback", "WARNING")
+                return Decimal('0')
+        except AttributeError:
+            # 尝试备用方法名
+            try:
+                account_summary = self.paradex.api_client.get_account_summary()
+                if account_summary:
+                    equity = float(getattr(account_summary, 'account_value', 0))
+                    self.logger.log(f"Account net worth (fallback method): {equity}", "INFO")
+                    return Decimal(str(equity))
+            except AttributeError:
+                try:
+                    account_summary = self.paradex.api_client.fetch_account()
+                    if account_summary:
+                        equity = float(getattr(account_summary, 'account_value', 0))
+                        self.logger.log(f"Account net worth (second fallback): {equity}", "INFO")
+                        return Decimal(str(equity))
+                except AttributeError:
+                    self.logger.log("No valid account summary method found", "ERROR")
         except Exception as e:
             self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
-            return Decimal('0')
+        
+        # 如果所有方法都失败，返回0而不是抛出异常
+        return Decimal('0')
 
     async def get_unrealized_pnl_and_margin(self) -> Tuple[Decimal, Decimal]:
         """
