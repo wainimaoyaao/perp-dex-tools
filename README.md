@@ -241,6 +241,204 @@ Python 版本要求（最佳选项是 Python 3.10 - 3.12）：
 - **渐进式响应**：根据回撤严重程度采取不同措施
 - **会话重置**：每次启动交易时重新计算基准净值
 
+## 🚀 脚本使用方法
+
+本项目提供了便捷的脚本来管理交易机器人的启动、停止和状态检查。这些脚本支持 Ubuntu/Linux 系统，并针对 `env` 和 `para_env` 虚拟环境进行了优化。
+
+### 📋 可用脚本
+
+#### 1. `start_bots.sh` - 启动交易机器人
+
+**功能特性：**
+- 自动检查虚拟环境是否存在
+- 同时启动 Paradex 和 GRVT 交易机器人
+- 后台运行并生成独立的日志文件
+- 显示进程 PID 便于管理
+- 彩色输出提升用户体验
+
+**使用方法：**
+```bash
+# 给脚本添加执行权限（首次使用）
+chmod +x start_bots.sh
+
+# 启动所有机器人
+./start_bots.sh
+```
+
+**输出示例：**
+```
+🚀 启动交易机器人...
+✅ 虚拟环境 para_env 存在
+✅ 虚拟环境 env 存在
+🤖 启动 Paradex 机器人...
+🤖 启动 GRVT 机器人...
+✅ 机器人启动完成！
+
+📊 运行状态：
+- Paradex 机器人 PID: 12345
+- GRVT 机器人 PID: 12346
+
+📝 日志文件：
+- Paradex: paradex_bot.log
+- GRVT: grvt_bot.log
+
+💡 使用提示：
+- 查看实时日志: tail -f paradex_bot.log
+- 停止机器人: ./stop_bots.sh
+- 检查状态: ./check_bots.sh
+```
+
+#### 2. `stop_bots.sh` - 停止交易机器人
+
+**功能特性：**
+- 优雅地停止所有运行中的机器人
+- 基于 PID 文件进行精确停止
+- 自动清理残留进程
+- 显示停止后的状态信息
+
+**使用方法：**
+```bash
+# 停止所有机器人
+./stop_bots.sh
+```
+
+**输出示例：**
+```
+🛑 停止交易机器人...
+✅ 成功停止 Paradex 机器人 (PID: 12345)
+✅ 成功停止 GRVT 机器人 (PID: 12346)
+🧹 清理残留的 runbot.py 进程...
+✅ 所有机器人已停止
+
+📊 当前状态：
+- 运行中的 runbot.py 进程: 0
+- Paradex 日志大小: 1.2MB
+- GRVT 日志大小: 0.8MB
+```
+
+#### 3. `check_bots.sh` - 检查机器人状态
+
+**功能特性：**
+- 全面的系统状态检查
+- 虚拟环境和配置文件验证
+- 进程状态和资源使用监控
+- 日志文件分析和错误检测
+- 网络连接状态检查
+
+**使用方法：**
+```bash
+# 检查机器人状态
+./check_bots.sh
+```
+
+**输出示例：**
+```
+🔍 交易机器人状态检查
+
+📁 虚拟环境状态：
+✅ para_env: 存在 (Python 3.10.12)
+✅ env: 存在 (Python 3.10.12)
+
+⚙️ 配置文件状态：
+✅ .env 文件存在
+✅ PARADEX_L1_ADDRESS 已配置
+✅ GRVT_TRADING_ACCOUNT_ID 已配置
+
+🤖 进程状态：
+✅ 发现 2 个运行中的 runbot.py 进程
+  - PID 12345: Paradex 机器人 (运行时间: 2小时)
+  - PID 12346: GRVT 机器人 (运行时间: 2小时)
+
+📝 日志文件状态：
+📄 paradex_bot.log: 1.2MB, 1,234 行, 最后修改: 2分钟前
+📄 grvt_bot.log: 0.8MB, 987 行, 最后修改: 1分钟前
+
+🚨 最近错误: 无
+
+📊 最新日志 (最后3行):
+[Paradex] 2024-01-15 10:30:15 - 订单已提交: ETH-USD-PERP
+[GRVT] 2024-01-15 10:30:20 - 持仓更新: BTC-USD-PERP
+
+💻 系统资源：
+- 内存使用: 45%
+- 磁盘空间: 78%
+
+🌐 网络连接: ✅ 正常
+
+💡 快速操作：
+- 启动机器人: ./start_bots.sh
+- 停止机器人: ./stop_bots.sh
+- 查看实时日志: tail -f paradex_bot.log
+```
+
+### 🔧 脚本配置说明
+
+#### 虚拟环境要求
+脚本会自动检查以下虚拟环境：
+- `para_env`: 用于 Paradex 交易机器人
+- `env`: 用于 GRVT 交易机器人
+
+#### 日志文件
+- `paradex_bot.log`: Paradex 机器人的输出日志
+- `grvt_bot.log`: GRVT 机器人的输出日志
+- `.paradex_pid`: Paradex 机器人的进程 ID 文件
+- `.grvt_pid`: GRVT 机器人的进程 ID 文件
+
+#### 自定义配置
+如需修改脚本行为，可以编辑脚本文件中的以下变量：
+```bash
+# 在 start_bots.sh 中
+PARADEX_ENV="para_env"    # Paradex 虚拟环境名称
+GRVT_ENV="env"           # GRVT 虚拟环境名称
+PARADEX_LOG="paradex_bot.log"  # Paradex 日志文件名
+GRVT_LOG="grvt_bot.log"       # GRVT 日志文件名
+```
+
+### ⚠️ 注意事项
+
+1. **权限设置**: 首次使用前需要给脚本添加执行权限
+2. **虚拟环境**: 确保 `para_env` 和 `env` 虚拟环境已正确创建并安装依赖
+3. **配置文件**: 确保 `.env` 文件已正确配置所需的 API 密钥
+4. **Python 版本**: 脚本使用 `python3` 命令，确保系统已安装 Python 3
+5. **日志管理**: 定期清理日志文件以避免占用过多磁盘空间
+
+### 🚨 故障排除
+
+#### 常见问题及解决方案：
+
+**问题1: 虚拟环境不存在**
+```bash
+❌ 虚拟环境 para_env 不存在
+```
+**解决方案**: 创建虚拟环境
+```bash
+python3 -m venv para_env
+python3 -m venv env
+```
+
+**问题2: 权限被拒绝**
+```bash
+bash: ./start_bots.sh: Permission denied
+```
+**解决方案**: 添加执行权限
+```bash
+chmod +x *.sh
+```
+
+**问题3: 进程无法启动**
+```bash
+❌ 启动 Paradex 机器人失败
+```
+**解决方案**: 检查配置和依赖
+```bash
+# 检查配置文件
+./check_bots.sh
+
+# 手动测试启动
+source para_env/bin/activate
+python3 runbot.py --help
+```
+
 ## 示例命令：
 
 ### EdgeX 交易所：
