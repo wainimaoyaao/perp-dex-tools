@@ -34,11 +34,12 @@ log_issue() {
     local severity=$1
     local message=$2
     
-    TOTAL_ISSUES=$((TOTAL_ISSUES + 1))
     if [ "$severity" = "critical" ]; then
+        TOTAL_ISSUES=$((TOTAL_ISSUES + 1))
         CRITICAL_ISSUES=$((CRITICAL_ISSUES + 1))
         echo -e "${RED}❌ [严重] $message${NC}"
     elif [ "$severity" = "warning" ]; then
+        TOTAL_ISSUES=$((TOTAL_ISSUES + 1))
         echo -e "${YELLOW}⚠️  [警告] $message${NC}"
     else
         echo -e "${CYAN}ℹ️  [信息] $message${NC}"
