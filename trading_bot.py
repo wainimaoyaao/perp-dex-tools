@@ -88,6 +88,7 @@ class TradingBot:
         self.order_filled_amount = Decimal('0')  # Initialize order filled amount
         self.shutdown_requested = False
         self.loop = None
+        self.trading_paused = False  # Flag to pause new orders during medium drawdown
         
         # 止损订单状态跟踪
         self.stop_loss_order_id = None  # 当前止损订单ID
@@ -102,8 +103,14 @@ class TradingBot:
                 medium_warning_threshold=config.drawdown_medium_threshold / 100,
                 severe_stop_loss_threshold=config.drawdown_severe_threshold / 100
             )
-            self.drawdown_monitor = DrawdownMonitor(drawdown_config, self.logger)
-            self.logger.log(f"Drawdown monitor enabled with thresholds: "
+            # 传递exchange_client和contract_id以启用自动止损功能
+            self.drawdown_monitor = DrawdownMonitor(
+                drawdown_config, 
+                self.logger, 
+                self.exchange_client, 
+                config.contract_id
+            )
+            self.logger.log(f"Drawdown monitor enabled with automatic stop-loss. Thresholds: "
                           f"Light={config.drawdown_light_threshold}%, "
                           f"Medium={config.drawdown_medium_threshold}%, "
                           f"Severe={config.drawdown_severe_threshold}%", "INFO")
@@ -578,7 +585,132 @@ class TradingBot:
                             drawdown_percentage = self.drawdown_monitor.get_drawdown_percentage()
                             session_peak = self.drawdown_monitor.session_peak_networth
                             
-                            # Severe drawdown - stop trading immediately
+                            # Execute stop-loss first before stopping the script
+                            if self.drawdown_monitor.is_stop_loss_triggered():
+                                stop_loss_success = False
+                                retry_count = 0
+                                max_retries = 100  # 设置最大重试次数，避免真正的无限循环
+                                emergency_threshold = 10  # 紧急模式阈值
+                                
+                                self.logger.log("Starting stop-loss execution with enhanced retry mechanism", "INFO")
+                                
+                                # 改进的重试循环，支持用户中断
+                                while not stop_loss_success and retry_count < max_retries and not self.shutdown_requested:
+                                    try:
+                                        retry_count += 1
+                                        
+                                        # 进入紧急模式提醒
+                                        if retry_count == emergency_threshold:
+                                            emergency_msg = f"⚠️ Stop-loss entering emergency mode after {emergency_threshold} attempts"
+                                            self.logger.log(emergency_msg, "WARNING")
+                                            await self.send_notification(emergency_msg)
+                                        
+                                        self.logger.log(f"Executing automatic stop-loss before shutdown (attempt {retry_count}/{max_retries})...", "INFO")
+                                        
+                                        # 记录执行前的状态
+                                        try:
+                                            current_positions = await self.exchange_client.get_account_positions()
+                                            self.logger.log(f"Current position before stop-loss: {current_positions}", "INFO")
+                                        except Exception as pos_e:
+                                            self.logger.log(f"Failed to get current position: {pos_e}", "WARNING")
+                                        
+                                        # 执行止损
+                                        await self.drawdown_monitor.execute_pending_stop_loss()
+                                        
+                                        # 检查止损是否真正执行成功
+                                        if self.drawdown_monitor.stop_loss_executed:
+                                            stop_loss_success = True
+                                            self.logger.log("Automatic stop-loss executed successfully", "INFO")
+                                            
+                                            # 验证仓位是否真正平仓
+                                            try:
+                                                final_positions = await self.exchange_client.get_account_positions()
+                                                self.logger.log(f"Final position after stop-loss: {final_positions}", "INFO")
+                                                if abs(final_positions) > 0.001:  # 允许小的精度误差
+                                                    self.logger.log(f"WARNING: Position not fully closed, remaining: {final_positions}", "WARNING")
+                                            except Exception as verify_e:
+                                                self.logger.log(f"Failed to verify final position: {verify_e}", "WARNING")
+                                        else:
+                                            # 详细记录失败原因
+                                            failure_reason = "Unknown - stop_loss_executed flag not set"
+                                            
+                                            # 尝试获取更多失败信息
+                                            try:
+                                                # 检查是否有活跃订单
+                                                active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
+                                                if active_orders:
+                                                    failure_reason = f"Active orders still exist: {len(active_orders)} orders"
+                                                    for order in active_orders[:3]:  # 只记录前3个订单
+                                                        self.logger.log(f"Active order: {order.order_id} - {order.side} {order.size} @ {order.price}", "INFO")
+                                                
+                                                # 检查当前仓位
+                                                current_pos = await self.exchange_client.get_account_positions()
+                                                if abs(current_pos) > 0.001:
+                                                    failure_reason += f" | Position not closed: {current_pos}"
+                                                
+                                            except Exception as detail_e:
+                                                failure_reason += f" | Failed to get detailed info: {detail_e}"
+                                            
+                                            self.logger.log(f"Stop-loss execution attempt {retry_count} failed. Reason: {failure_reason}", "WARNING")
+                                            
+                                            # 动态调整等待时间
+                                            wait_time = min(10, 3 + retry_count // 5)  # 3-10秒，随重试次数增加
+                                            self.logger.log(f"Retrying in {wait_time} seconds...", "INFO")
+                                            
+                                            # 可中断的等待
+                                            for i in range(wait_time):
+                                                if self.shutdown_requested:
+                                                    self.logger.log("Stop-loss retry interrupted by user", "WARNING")
+                                                    break
+                                                await asyncio.sleep(1)
+                                            
+                                    except KeyboardInterrupt:
+                                        self.logger.log("Stop-loss execution interrupted by user (Ctrl+C)", "WARNING")
+                                        self.shutdown_requested = True
+                                        break
+                                    except Exception as e:
+                                        # 详细记录异常信息
+                                        error_details = f"Exception type: {type(e).__name__}, Message: {str(e)}"
+                                        if hasattr(e, 'response'):
+                                            error_details += f", Response: {getattr(e, 'response', 'N/A')}"
+                                        if hasattr(e, 'status_code'):
+                                            error_details += f", Status Code: {getattr(e, 'status_code', 'N/A')}"
+                                        
+                                        self.logger.log(f"Error executing stop-loss (attempt {retry_count}): {error_details}", "ERROR")
+                                        self.logger.log(f"Full traceback: {traceback.format_exc()}", "ERROR")
+                                        
+                                        # 可中断的等待
+                                        wait_time = min(10, 5 + retry_count // 10)
+                                        self.logger.log(f"Retrying stop-loss execution in {wait_time} seconds...", "INFO")
+                                        for i in range(wait_time):
+                                            if self.shutdown_requested:
+                                                self.logger.log("Stop-loss retry interrupted by user", "WARNING")
+                                                break
+                                            await asyncio.sleep(1)
+                                
+                                # 最终状态检查和报告
+                                if self.shutdown_requested:
+                                    interrupt_msg = f"🛑 Stop-loss execution interrupted by user after {retry_count} attempts"
+                                    interrupt_msg += f"\nManual intervention may be required to close positions"
+                                    interrupt_msg += f"\n用户中断了止损执行，可能需要手动平仓"
+                                    self.logger.log(interrupt_msg, "WARNING")
+                                    await self.send_notification(interrupt_msg)
+                                elif retry_count >= max_retries:
+                                    max_retry_msg = f"🚨 CRITICAL: Stop-loss failed after {max_retries} attempts!"
+                                    max_retry_msg += f"\nAutomatic stop-loss has been exhausted"
+                                    max_retry_msg += f"\nManual intervention required immediately!"
+                                    max_retry_msg += f"\n自动止损已达到最大重试次数，需要立即手动干预！"
+                                    self.logger.log(max_retry_msg, "CRITICAL")
+                                    await self.send_notification(max_retry_msg)
+                                elif stop_loss_success:
+                                    success_msg = f"✅ Stop-loss successfully executed after {retry_count} attempts"
+                                    self.logger.log(success_msg, "INFO")
+                                    if retry_count > 5:  # 如果重试次数较多，发送通知
+                                        await self.send_notification(f"Stop-loss completed after {retry_count} attempts")
+                                
+                                self.logger.log("Stop-loss successfully executed, proceeding with shutdown", "INFO")
+                            
+                            # Severe drawdown - stop trading after executing stop-loss
                             msg = f"\n\n🚨 SEVERE DRAWDOWN ALERT 🚨\n"
                             msg += f"Exchange: {self.config.exchange.upper()}\n"
                             msg += f"Ticker: {self.config.ticker.upper()}\n"
@@ -586,8 +718,8 @@ class TradingBot:
                             msg += f"Current Net Worth: {current_networth}\n"
                             msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
                             msg += f"Threshold: {self.config.drawdown_severe_threshold}%\n"
-                            msg += "Trading stopped due to severe drawdown!\n"
-                            msg += "严重回撤，交易已停止！\n"
+                            msg += "Automatic stop-loss executed, trading stopped due to severe drawdown!\n"
+                            msg += "已执行自动止损，严重回撤，交易已停止！\n"
                             
                             self.logger.log(msg, "ERROR")
                             await self.send_notification(msg)
@@ -601,23 +733,27 @@ class TradingBot:
                             session_peak = self.drawdown_monitor.session_peak_networth
                             
                             # Medium drawdown - pause new orders
-                            msg = f"⚠️ MEDIUM DRAWDOWN WARNING ⚠️\n"
-                            msg += f"Exchange: {self.config.exchange.upper()}\n"
-                            msg += f"Ticker: {self.config.ticker.upper()}\n"
-                            msg += f"Session Peak Net Worth: {session_peak}\n"
-                            msg += f"Current Net Worth: {current_networth}\n"
-                            msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
-                            msg += f"Threshold: {self.config.drawdown_medium_threshold}%\n"
-                            msg += "Pausing new orders, allowing only position closing\n"
-                            msg += "中等回撤警告，暂停新订单，仅允许平仓\n"
-                            
-                            self.logger.log(msg, "WARNING")
-                            await self.send_notification(msg)
-                            # Skip to next iteration to pause new orders
-                            await asyncio.sleep(5)
-                            continue
+                            if not self.trading_paused:
+                                self.trading_paused = True
+                                msg = f"⚠️ MEDIUM DRAWDOWN WARNING ⚠️\n"
+                                msg += f"Exchange: {self.config.exchange.upper()}\n"
+                                msg += f"Ticker: {self.config.ticker.upper()}\n"
+                                msg += f"Session Peak Net Worth: {session_peak}\n"
+                                msg += f"Current Net Worth: {current_networth}\n"
+                                msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
+                                msg += f"Threshold: {self.config.drawdown_medium_threshold}%\n"
+                                msg += "Pausing new orders, allowing only position closing\n"
+                                msg += "中等回撤警告，暂停新订单，仅允许平仓\n"
+                                
+                                self.logger.log(msg, "WARNING")
+                                await self.send_notification(msg)
                         
                         elif current_level.value == "light_warning":
+                            # Resume trading if it was paused
+                            if self.trading_paused:
+                                self.trading_paused = False
+                                self.logger.log("Trading resumed - drawdown level reduced to light warning", "INFO")
+                            
                             drawdown_percentage = self.drawdown_monitor.get_drawdown_percentage()
                             session_peak = self.drawdown_monitor.session_peak_networth
                             
@@ -634,9 +770,18 @@ class TradingBot:
                             
                             self.logger.log(msg, "WARNING")
                             await self.send_notification(msg)
+                        
+                        else:
+                            # No drawdown warning - resume trading if it was paused
+                            if self.trading_paused:
+                                self.trading_paused = False
+                                self.logger.log("Trading resumed - drawdown level back to normal", "INFO")
                                 
                     except Exception as e:
                         self.logger.log(f"Error in drawdown monitoring: {e}", "ERROR")
+                
+                # Note: Stop-loss execution is now handled in the severe drawdown check above
+                # to ensure it executes before script shutdown
                 
                 # Update active orders
                 active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
@@ -679,6 +824,12 @@ class TradingBot:
                         meet_grid_step_condition = await self._meet_grid_step_condition()
                         if not meet_grid_step_condition:
                             await asyncio.sleep(1)
+                            continue
+
+                        # Check if trading is paused due to medium drawdown
+                        if self.trading_paused:
+                            self.logger.log("Skipping new order placement - trading paused due to medium drawdown", "INFO")
+                            await asyncio.sleep(5)
                             continue
 
                         await self._place_and_monitor_open_order()

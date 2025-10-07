@@ -122,6 +122,11 @@ Python 版本要求（最佳选项是 Python 3.10 - 3.12）：
 5. **风险管理**：限制最大并发订单数
 6. **网格步长控制**：通过 `--grid-step` 参数控制新订单与现有平仓订单之间的最小价格距离
 7. **停止交易控制**：通过 `--stop-price` 参数控制停止交易的的价格条件
+8. **🛡️ 智能止损系统**：集成多层次止损保护机制
+   - **价格止损**：基于 `--stop-price` 参数的价格触发止损
+   - **回撤止损**：基于回撤监控的自动止损保护
+   - **智能执行**：使用 bid1/ask1 价格的智能止损订单执行
+   - **重试机制**：包含完整的重试和错误恢复机制
 
 #### ⚙️ 关键参数
 
@@ -130,7 +135,8 @@ Python 版本要求（最佳选项是 Python 3.10 - 3.12）：
 - **max-orders**: 最大同时活跃订单数（风险控制）
 - **wait-time**: 订单间等待时间（避免过于频繁交易）
 - **grid-step**: 网格步长控制（防止平仓订单过于密集）
-- **stop-price**: 当市场价格达到该价格时退出脚本
+- **stop-price**: 价格止损触发点，当市场价格达到该价格时退出脚本并执行止损
+- **drawdown-severe-threshold**: 严重回撤止损阈值（默认12%），触发自动止损保护
 - **pause-price**: 当市场价格达到该价格时暂停脚本
 
 #### 网格步长功能详解
@@ -164,7 +170,6 @@ Python 版本要求（最佳选项是 Python 3.10 - 3.12）：
 - **下单频率控制**：通过 `wait-time` 确保下单的时间间隔，防止短时间内被套
 - **实时监控**：持续监控持仓和订单状态
 - **回撤监控**：可选的智能回撤监控系统，提供多级风险预警和自动止损
-- **⚠️ 基础策略无止损机制**：基础策略不包含止损功能，但可通过回撤监控功能实现风险管理
 
 #### 📈 PnL 和保证金监控功能
 
@@ -210,7 +215,7 @@ Python 版本要求（最佳选项是 Python 3.10 - 3.12）：
 
 - **轻微回撤（默认 5%）**：发送通知提醒，继续正常交易
 - **中等回撤（默认 8%）**：暂停新订单，仅允许平仓操作
-- **严重回撤（默认 12%）**：立即停止所有交易，触发自动止损
+- **严重回撤（默认 12%）**：立即停止所有交易，触发智能自动止损系统
 
 ##### ⚙️ 配置参数
 
@@ -237,9 +242,60 @@ Python 版本要求（最佳选项是 Python 3.10 - 3.12）：
 ##### 🚨 风险管理增强
 
 - **实时通知**：通过 Telegram/Lark 发送回撤警报
-- **自动止损**：严重回撤时自动停止交易
+- **智能自动止损**：严重回撤时触发多层次止损保护
+  - **智能价格执行**：使用 bid1/ask1 价格确保最优成交
+  - **持续监控机制**：5秒间隔监控订单状态直至完全成交
+  - **重试保护**：包含完整的重试机制和错误恢复
+  - **状态验证**：确认所有持仓完全平仓后才结束止损流程
 - **渐进式响应**：根据回撤严重程度采取不同措施
 - **会话重置**：每次启动交易时重新计算基准净值
+- **异常处理集成**：集成了完整的异常处理机制，确保监控系统的稳定性
+- **错误恢复**：在遇到临时性错误时自动恢复监控功能
+- **数据验证**：严格的净值数据验证，防止异常数据影响监控准确性
+
+#### 🛡️ 异常处理与错误管理
+
+机器人现在配备了全面的异常处理系统，提供强大的错误诊断和恢复能力：
+
+##### 🎯 自定义异常体系
+
+机器人实现了完整的自定义异常类体系，提供精确的错误分类和上下文信息：
+
+- **DrawdownMonitorError**: 所有自定义异常的基类，提供统一的上下文信息存储
+- **NetworthValidationError**: 净值验证异常，处理净值输入验证失败
+- **StopLossExecutionError**: 止损执行异常，处理止损订单执行错误
+- **OrderMonitoringError**: 订单监控异常，处理订单状态监控错误
+- **APIRateLimitError**: API限流异常，处理API调用频率限制
+- **NetworkConnectionError**: 网络连接异常，处理网络连接失败
+- **DataIntegrityError**: 数据完整性异常，处理数据验证失败
+- **ConfigurationError**: 配置错误异常，处理配置文件或参数错误
+
+##### 🔍 错误诊断功能
+
+- **详细上下文信息**：每个异常都包含丰富的上下文数据，便于问题定位
+- **异常链追踪**：支持异常链，可以追踪错误的根本原因
+- **结构化错误信息**：提供标准化的错误格式，便于日志分析
+- **时间戳记录**：自动记录异常发生的精确时间
+
+##### 🔧 错误恢复机制
+
+- **优雅降级**：在遇到非致命错误时，系统会优雅降级而不是崩溃
+- **自动重试**：对于临时性错误（如网络问题），系统会自动重试
+- **状态保护**：确保在错误发生时交易状态的一致性
+- **智能恢复**：根据错误类型采取相应的恢复策略
+
+##### 📊 错误监控与报告
+
+- **实时错误监控**：持续监控系统运行状态，及时发现异常
+- **错误统计分析**：统计错误发生频率和类型，便于系统优化
+- **详细错误日志**：记录完整的错误信息和调用栈
+- **通知机制**：重要错误会通过 Telegram/Lark 发送通知
+
+##### ⚡ 性能优化
+
+- **高效异常处理**：优化的异常处理逻辑，最小化性能影响
+- **内存管理**：合理的异常对象生命周期管理
+- **日志优化**：智能的日志级别控制，避免日志洪水
 
 ## 🚀 脚本使用方法
 
@@ -293,6 +349,10 @@ chmod +x start_bots.sh
 **功能特性：**
 - 优雅地停止所有运行中的机器人
 - 基于 PID 文件进行精确停止
+- **🛡️ 智能止损保护检查**：自动检测正在执行的止损操作，包括价格止损和回撤止损
+- **⚠️ 用户确认机制**：止损进行中时提示用户确认是否强制停止，防止意外中断止损流程
+- **📊 止损状态分析**：详细分析止损执行进度和完成状态
+- **⏰ 延长等待时间**：从 10 秒延长到 15 秒，确保优雅关闭
 - 自动清理残留进程
 - 显示停止后的状态信息
 
@@ -302,7 +362,7 @@ chmod +x start_bots.sh
 ./stop_bots.sh
 ```
 
-**输出示例：**
+**输出示例（正常情况）：**
 ```
 🛑 停止交易机器人...
 ✅ 成功停止 Paradex 机器人 (PID: 12345)
@@ -316,14 +376,82 @@ chmod +x start_bots.sh
 - GRVT 日志大小: 0.8MB
 ```
 
-#### 3. `check_bots.sh` - 检查机器人状态
+**输出示例（检测到止损）：**
+```
+🛑 停止交易机器人...
+⚠️  检测到 Paradex 机器人正在执行止损操作！
+强制停止可能导致风险暴露。是否继续？(y/N): n
+❌ 用户取消停止操作
+```
+
+#### 3. `safe_stop_bots.sh` - 安全停止交易机器人 🆕
+
+**功能特性：**
+- **🔍 智能止损检测**：自动扫描日志文件，检测活跃的止损操作（包括价格触发和回撤触发的止损）
+- **🛡️ 三种停止模式**：等待完成、强制停止、取消操作
+- **⏰ 超时保护**：最长等待 5 分钟，防止无限等待
+- **📊 实时状态显示**：显示止损进度和剩余等待时间
+- **🔄 自动重试**：定期检查止损状态，智能判断完成时机
+
+**使用方法：**
+```bash
+# 给脚本添加执行权限（首次使用）
+chmod +x safe_stop_bots.sh
+
+# 安全停止所有机器人
+./safe_stop_bots.sh
+```
+
+**输出示例（无活跃止损）：**
+```
+🔍 检查活跃的止损操作...
+✅ 未检测到活跃的止损操作
+🛑 调用 stop_bots.sh 停止机器人...
+✅ 机器人安全停止完成
+```
+
+**输出示例（检测到活跃止损）：**
+```
+🔍 检查活跃的止损操作...
+⚠️  检测到以下活跃的止损操作：
+  - Paradex: 正在执行止损 (最后活动: 30秒前)
+  - GRVT: 正在重试止损 (最后活动: 15秒前)
+
+请选择操作：
+1) 等待止损完成 (最多等待 5 分钟)
+2) 强制停止 (可能有风险)
+3) 取消操作
+请输入选择 (1-3): 1
+
+⏳ 等待止损操作完成... (剩余时间: 4分30秒)
+🔄 检查止损状态... Paradex: 仍在执行, GRVT: 已完成
+⏳ 等待止损操作完成... (剩余时间: 4分00秒)
+🔄 检查止损状态... Paradex: 已完成, GRVT: 已完成
+✅ 所有止损操作已完成
+🛑 调用 stop_bots.sh 停止机器人...
+✅ 机器人安全停止完成
+```
+
+**止损检测机制：**
+
+- 扫描 `paradex_output.log` 和 `grvt_output.log` 的最后 20 行
+- 搜索关键词：`executing stop loss`、`placing stop loss`、`retrying stop loss`、`severe drawdown triggered`、`automatic stop-loss`
+- 使用不区分大小写的模式匹配
+- 实时监控止损状态变化
+
+#### 4. `check_bots.sh` - 检查机器人状态
 
 **功能特性：**
 - 全面的系统状态检查
 - 虚拟环境和配置文件验证
 - 进程状态和资源使用监控
+- **🛡️ 止损状态监控**：实时显示止损监控状态和历史记录
+- **📊 回撤分析**：显示当前回撤率和警告级别
+- **🔍 异常处理监控**：检测和分析异常处理系统状态
+- **📈 错误统计分析**：统计错误类型和发生频率
 - 日志文件分析和错误检测
 - 网络连接状态检查
+- **⚡ 性能监控**：监控系统资源使用和性能指标
 
 **使用方法：**
 ```bash
@@ -349,9 +477,32 @@ chmod +x start_bots.sh
   - PID 12345: Paradex 机器人 (运行时间: 2小时)
   - PID 12346: GRVT 机器人 (运行时间: 2小时)
 
+🛡️ 止损监控状态：
+📊 Paradex (paradex_output.log):
+  - 当前回撤率: 3.2% (正常)
+  - 警告级别: 无
+  - 止损执行历史: 今日 0 次
+  - 活跃止损: 无
+  - 异常处理状态: ✅ 正常
+  - 错误恢复次数: 0
+
+📊 GRVT (grvt_output.log):
+  - 当前回撤率: 1.8% (正常)
+  - 警告级别: 无
+  - 止损执行历史: 今日 0 次
+  - 活跃止损: 无
+  - 异常处理状态: ✅ 正常
+  - 错误恢复次数: 0
+
+🔍 异常处理系统状态：
+  - 自定义异常类: ✅ 已加载 (7个异常类型)
+  - 错误上下文记录: ✅ 正常
+  - 异常链追踪: ✅ 启用
+  - 错误统计: 今日异常 0 次
+
 📝 日志文件状态：
-📄 paradex_bot.log: 1.2MB, 1,234 行, 最后修改: 2分钟前
-📄 grvt_bot.log: 0.8MB, 987 行, 最后修改: 1分钟前
+📄 paradex_output.log: 1.2MB, 1,234 行, 最后修改: 2分钟前
+📄 grvt_output.log: 0.8MB, 987 行, 最后修改: 1分钟前
 
 🚨 最近错误: 无
 
@@ -367,8 +518,9 @@ chmod +x start_bots.sh
 
 💡 快速操作：
 - 启动机器人: ./start_bots.sh
-- 停止机器人: ./stop_bots.sh
-- 查看实时日志: tail -f paradex_bot.log
+- 安全停止机器人: ./safe_stop_bots.sh
+- 强制停止机器人: ./stop_bots.sh
+- 查看实时日志: tail -f paradex_output.log
 ```
 
 ### 🔧 脚本配置说明
@@ -379,19 +531,39 @@ chmod +x start_bots.sh
 - `env`: 用于 GRVT 交易机器人
 
 #### 日志文件
-- `paradex_bot.log`: Paradex 机器人的输出日志
-- `grvt_bot.log`: GRVT 机器人的输出日志
+- `paradex_output.log`: Paradex 机器人的输出日志（包含止损监控信息）
+- `grvt_output.log`: GRVT 机器人的输出日志（包含止损监控信息）
 - `.paradex_pid`: Paradex 机器人的进程 ID 文件
 - `.grvt_pid`: GRVT 机器人的进程 ID 文件
+
+#### 止损监控集成
+所有脚本现在都集成了止损监控功能：
+- **实时检测**：自动检测日志中的止损活动
+- **状态保护**：防止在止损执行期间意外停止机器人
+- **历史分析**：跟踪止损执行历史和频率
+- **风险评估**：基于回撤率提供风险级别评估
+
+#### 异常处理集成
+脚本现在支持完整的异常处理监控：
+- **异常检测**：自动检测和分类各种异常类型
+- **错误统计**：统计异常发生频率和类型分布
+- **恢复监控**：监控系统的错误恢复状态
+- **诊断工具**：提供详细的错误诊断信息
+- **性能监控**：监控异常处理对系统性能的影响
 
 #### 自定义配置
 如需修改脚本行为，可以编辑脚本文件中的以下变量：
 ```bash
 # 在 start_bots.sh 中
-PARADEX_ENV="para_env"    # Paradex 虚拟环境名称
-GRVT_ENV="env"           # GRVT 虚拟环境名称
-PARADEX_LOG="paradex_bot.log"  # Paradex 日志文件名
-GRVT_LOG="grvt_bot.log"       # GRVT 日志文件名
+PARADEX_ENV="para_env"              # Paradex 虚拟环境名称
+GRVT_ENV="env"                     # GRVT 虚拟环境名称
+PARADEX_LOG="paradex_output.log"   # Paradex 日志文件名
+GRVT_LOG="grvt_output.log"         # GRVT 日志文件名
+
+# 在 safe_stop_bots.sh 中
+PARADEX_LOG_FILE="paradex_output.log"  # Paradex 止损监控日志
+GRVT_LOG_FILE="grvt_output.log"        # GRVT 止损监控日志
+MAX_WAIT_TIME=300                      # 最大等待时间（秒）
 ```
 
 ### ⚠️ 注意事项
@@ -401,6 +573,9 @@ GRVT_LOG="grvt_bot.log"       # GRVT 日志文件名
 3. **配置文件**: 确保 `.env` 文件已正确配置所需的 API 密钥
 4. **Python 版本**: 脚本使用 `python3` 命令，确保系统已安装 Python 3
 5. **日志管理**: 定期清理日志文件以避免占用过多磁盘空间
+6. **异常处理**: 系统现在具备完整的异常处理机制，遇到错误时会自动记录详细信息
+7. **错误恢复**: 大部分临时性错误会自动恢复，无需手动干预
+8. **监控检查**: 建议定期运行 `./check_bots.sh` 检查系统健康状态
 
 ### 🚨 故障排除
 
@@ -437,6 +612,191 @@ chmod +x *.sh
 # 手动测试启动
 source para_env/bin/activate
 python3 runbot.py --help
+```
+
+#### 🔍 错误诊断指南
+
+##### 异常处理相关错误
+
+**问题4: 净值验证失败**
+```bash
+NetworthValidationError: 净值验证失败: 值必须为正数
+```
+**解决方案**: 检查账户余额和API连接
+```bash
+# 检查账户状态
+./check_bots.sh
+
+# 验证API配置
+python3 -c "from helpers.drawdown_monitor import DrawdownMonitor; print('API配置正常')"
+```
+
+**问题5: 回撤监控异常**
+```bash
+DrawdownMonitorError: 回撤监控更新失败
+```
+**解决方案**: 检查网络连接和数据完整性
+```bash
+# 检查网络连接
+ping api.exchange.com
+
+# 重启监控系统
+./stop_bots.sh && ./start_bots.sh
+```
+
+**问题6: API限流错误**
+```bash
+APIRateLimitError: API调用频率超限，请等待60秒后重试
+```
+**解决方案**: 等待限流解除或调整请求频率
+```bash
+# 检查API使用情况
+grep "rate limit" *.log
+
+# 调整等待时间参数
+python3 runbot.py --wait-time 600 [其他参数]
+```
+
+##### 监控系统诊断
+
+**问题7: 回撤监控未启用**
+```bash
+⚠️ 未检测到回撤监控启用信息
+```
+**解决方案**: 确认启用回撤监控参数
+```bash
+# 启用回撤监控
+python3 runbot.py --enable-drawdown-monitor [其他参数]
+
+# 检查监控状态
+./check_bots.sh
+```
+
+**问题8: 止损执行失败**
+```bash
+StopLossExecutionError: 止损订单执行失败
+```
+**解决方案**: 检查订单状态和账户权限
+```bash
+# 检查订单历史
+grep "stop loss" *.log | tail -10
+
+# 验证账户权限
+python3 -c "import exchange_client; client.get_account_info()"
+```
+
+**问题9: 价格止损未触发**
+```bash
+价格已达到stop-price但未执行止损
+```
+**解决方案**: 确认stop-price参数设置正确
+```bash
+# 检查价格止损配置
+grep "stop.price\|price.*stop" *.log | tail -5
+
+# 验证交易方向与止损逻辑
+python3 runbot.py --stop-price 5500 --direction buy [其他参数]
+```
+
+**问题10: 回撤止损过于敏感**
+```bash
+频繁触发回撤止损，影响正常交易
+```
+**解决方案**: 调整回撤阈值参数
+```bash
+# 调整为更宽松的阈值
+python3 runbot.py --drawdown-severe-threshold 15.0 [其他参数]
+
+# 检查净值计算准确性
+grep "drawdown\|networth" *.log | tail -10
+```
+
+**问题11: 止损订单未完全成交**
+```bash
+止损订单部分成交，仍有剩余持仓
+```
+**解决方案**: 系统会自动重试直至完全成交
+```bash
+# 检查止损重试状态
+grep "retrying.*stop\|stop.*retry" *.log | tail -10
+
+# 监控重试进度
+tail -f *.log | grep "stop loss"
+```
+
+##### 🛠️ 高级诊断工具
+
+**日志分析命令**:
+```bash
+# 查看异常统计
+grep -c "Error\|Exception" *.log
+
+# 分析错误类型分布
+grep "Error:" *.log | cut -d':' -f2 | sort | uniq -c
+
+# 检查最近的异常
+tail -100 *.log | grep -A5 -B5 "Exception\|Error"
+
+# 止损相关诊断
+grep -E "(stop.loss|drawdown|severe)" *.log | tail -15
+
+# 分析止损执行时间
+grep "stop.loss.*executed\|stop.loss.*completed" *.log | tail -10
+```
+
+**性能监控命令**:
+```bash
+# 检查内存使用
+ps aux | grep runbot.py
+
+# 监控网络连接
+netstat -an | grep ESTABLISHED | grep -E "(443|80)"
+
+# 检查磁盘空间
+df -h | grep -E "(/$|/home)"
+
+# 监控系统资源
+top -p $(pgrep -f runbot)
+
+# 检查网络延迟
+ping -c 5 api.paradex.trade
+
+# 分析交易延迟
+grep "order.*placed\|order.*filled" *.log | tail -10
+
+# 止损执行性能分析
+grep "stop.loss.*start\|stop.loss.*end" *.log | tail -10
+
+# 监控止损响应时间
+grep -E "stop.loss.*[0-9]+ms|stop.loss.*[0-9]+s" *.log | tail -5
+```
+
+**系统健康检查**:
+```bash
+# 完整系统检查
+./check_bots.sh
+
+# 验证异常处理系统
+python3 -c "
+from helpers.drawdown_monitor import *
+print('✅ 异常处理系统正常')
+print('✅ 自定义异常类加载成功')
+"
+
+# 检查异常处理系统状态
+grep "Exception.*loaded\|Error.*handler" *.log | tail -5
+
+# 验证错误恢复机制
+grep "recovery.*attempt\|retry.*success" *.log | tail -10
+
+# 止损系统健康检查
+grep "stop.loss.*system.*ready\|stop.loss.*initialized" *.log | tail -3
+
+# 验证止损保护机制
+grep "stop.loss.*protection.*active\|drawdown.*monitoring" *.log | tail -5
+
+# 检查止损历史记录
+grep "stop.loss.*executed.*successfully" *.log | wc -l
 ```
 
 ## 示例命令：
@@ -505,14 +865,14 @@ python runbot.py --exchange grvt --ticker BTC --quantity 0.05 --take-profit 0.02
 
 ### 回撤监控详细使用指南：
 
-#### 📋 可用参数
+#### 📋 回撤参数
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--enable-drawdown-monitor` | flag | False | 启用回撤监控功能 |
 | `--drawdown-light-threshold` | Decimal | 5 | 轻微回撤警告阈值 (%) |
 | `--drawdown-medium-threshold` | Decimal | 8 | 中等回撤警告阈值 (%) |
-| `--drawdown-severe-threshold` | Decimal | 12 | 严重回撤止损阈值 (%) |
+| `--drawdown-severe-threshold` | Decimal | 12 | 严重回撤智能止损阈值 (%) - 触发自动止损保护 |
 
 #### 💡 使用示例
 
@@ -659,13 +1019,13 @@ python runbot.py \
 - `--max-orders`: 最大活跃订单数（默认：40）
 - `--wait-time`: 订单间等待时间（秒）（默认：450）
 - `--grid-step`: 与下一个平仓订单价格的最小距离百分比（默认：-100，表示无限制）
-- `--stop-price`: 当 `direction` 是 'buy' 时，当 price >= stop-price 时停止交易并退出程序；'sell' 逻辑相反（默认：-1，表示不会因为价格原因停止交易），参数的目的是防止订单被挂在”你认为的开多高点或开空低点“。
+- `--stop-price`: 价格止损触发点。当 `direction` 是 'buy' 时，当 price >= stop-price 时触发止损并退出程序；'sell' 逻辑相反（默认：-1，表示不启用价格止损）。触发时会执行智能止损流程，确保持仓安全平仓。参数的目的是防止订单被挂在"你认为的开多高点或开空低点"。
 - `--pause-price`: 当 `direction` 是 'buy' 时，当 price >= pause-price 时暂停交易，并在价格回到 pause-price 以下时重新开始交易；'sell' 逻辑相反（默认：-1，表示不会因为价格原因停止交易），参数的目的是防止订单被挂在”你认为的开多高点或开空低点“。
 - `--aster-boost`: 启用 Aster 交易所的 Boost 模式进行交易量提升（仅适用于 aster 交易所）
 - `--enable-drawdown-monitor`: 启用回撤监控功能（可选）
 - `--drawdown-light-threshold`: 轻微回撤阈值，百分比（默认 5.0）
 - `--drawdown-medium-threshold`: 中等回撤阈值，百分比（默认 8.0）
-- `--drawdown-severe-threshold`: 严重回撤阈值，百分比（默认 12.0）
+- `--drawdown-severe-threshold`: 严重回撤智能止损阈值，百分比（默认 12.0）。触发时会立即执行自动止损保护，使用智能价格执行和重试机制确保持仓安全平仓
   `--aster-boost` 的下单逻辑：下 maker 单开仓，成交后立即用 taker 单关仓，以此循环。磨损为一单 maker，一单 taker 的手续费，以及滑点。
 
 ## 日志记录
