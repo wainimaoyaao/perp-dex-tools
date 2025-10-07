@@ -18,12 +18,67 @@ FAILED_STOPS=0
 FORCE_STOPS=0
 SCRIPT_START_TIME=$(date '+%Y-%m-%d %H:%M:%S')
 
-echo -e "${RED}${BOLD}=== 交易机器人停止脚本 v2.0 ===${NC}"
-echo -e "${CYAN}启动时间: $SCRIPT_START_TIME${NC}"
+# 显示使用帮助
+show_usage() {
+    echo -e "${CYAN}${BOLD}交易机器人停止脚本 v2.1${NC}"
+    echo -e "${CYAN}用法: $0 [选项]${NC}"
+    echo ""
+    echo -e "${YELLOW}选项:${NC}"
+    echo -e "${YELLOW}  无参数          停止所有交易机器人${NC}"
+    echo -e "${YELLOW}  --paradex       仅停止 Paradex 机器人${NC}"
+    echo -e "${YELLOW}  --grvt          仅停止 GRVT 机器人${NC}"
+    echo -e "${YELLOW}  --help, -h      显示此帮助信息${NC}"
+    echo ""
+    echo -e "${CYAN}示例:${NC}"
+    echo -e "${CYAN}  $0              # 停止所有机器人${NC}"
+    echo -e "${CYAN}  $0 --paradex    # 仅停止 Paradex 机器人${NC}"
+    echo -e "${CYAN}  $0 --grvt       # 仅停止 GRVT 机器人${NC}"
+    echo ""
+}
 
-# 获取脚本所在目录
+# 处理命令行参数
+case "$1" in
+    --paradex)
+        echo -e "${CYAN}调用独立的 Paradex 停止脚本...${NC}"
+        if [ -f "./scripts/stop_paradex.sh" ]; then
+            exec ./scripts/stop_paradex.sh
+        else
+            echo -e "${RED}错误: stop_paradex.sh 脚本不存在${NC}"
+            exit 1
+        fi
+        ;;
+    --grvt)
+        echo -e "${CYAN}调用独立的 GRVT 停止脚本...${NC}"
+        if [ -f "./scripts/stop_grvt.sh" ]; then
+            exec ./scripts/stop_grvt.sh
+        else
+            echo -e "${RED}错误: stop_grvt.sh 脚本不存在${NC}"
+            exit 1
+        fi
+        ;;
+    --help|-h)
+        show_usage
+        exit 0
+        ;;
+    "")
+        # 无参数，继续执行原有的停止所有机器人逻辑
+        ;;
+    *)
+        echo -e "${RED}错误: 未知参数 '$1'${NC}"
+        echo ""
+        show_usage
+        exit 1
+        ;;
+esac
+
+echo -e "${RED}${BOLD}=== 交易机器人停止脚本 v2.1 ===${NC}"
+echo -e "${CYAN}启动时间: $SCRIPT_START_TIME${NC}"
+echo -e "${YELLOW}模式: 停止所有交易机器人${NC}"
+
+# 获取项目根目录（脚本所在目录的上级目录）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
 
 # 日志记录函数
 log_action() {
@@ -359,7 +414,7 @@ else
     echo -e "\n${YELLOW}${BOLD}强制清理选项:${NC}"
     echo -e "${YELLOW}1. 强制终止所有 runbot.py 进程: ${NC}${CYAN}pkill -9 -f runbot.py${NC}"
     echo -e "${YELLOW}2. 查看详细进程信息: ${NC}${CYAN}ps aux | grep runbot.py${NC}"
-    echo -e "${YELLOW}3. 重新运行此脚本: ${NC}${CYAN}./stop_bots.sh${NC}"
+    echo -e "${YELLOW}3. 重新运行此脚本: ${NC}${CYAN}./scripts/stop_bots.sh${NC}"
 fi
 
 # 显示日志文件信息
@@ -393,8 +448,12 @@ echo -e "${CYAN}结束时间: $script_end_time${NC}"
 
 # 快捷操作提示
 echo -e "\n${BLUE}${BOLD}=== 快捷操作 ===${NC}"
-echo -e "${CYAN}• 检查机器人状态: ${NC}./check_bots.sh"
-echo -e "${CYAN}• 启动机器人: ${NC}./start_bots.sh"
+echo -e "${CYAN}• 检查机器人状态: ${NC}./scripts/check_bots.sh"
+echo -e "${CYAN}• 启动所有机器人: ${NC}./scripts/start_bots.sh"
+echo -e "${CYAN}• 启动 Paradex: ${NC}./scripts/start_paradex.sh"
+echo -e "${CYAN}• 启动 GRVT: ${NC}./scripts/start_grvt.sh"
+echo -e "${CYAN}• 停止 Paradex: ${NC}./scripts/stop_paradex.sh"
+echo -e "${CYAN}• 停止 GRVT: ${NC}./scripts/stop_grvt.sh"
 echo -e "${CYAN}• 查看实时日志: ${NC}tail -f paradex_output.log"
 echo -e "${CYAN}• 查看错误日志: ${NC}grep -i error *.log | tail -10"
 echo -e "${CYAN}• 清理所有日志: ${NC}rm -f *.log"

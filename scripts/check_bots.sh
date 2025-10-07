@@ -1,7 +1,8 @@
 #!/bin/bash
 # 交易机器人状态检查脚本
-# 版本: 2.0
+# 版本: 2.1
 # 功能: 全面检查交易机器人运行状态、配置、日志和系统资源
+# 支持独立交易所检查功能
 
 # 颜色定义
 RED='\033[0;31m'
@@ -13,9 +14,69 @@ PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# 获取脚本所在目录
+# 获取项目根目录（脚本所在目录的上级目录）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
+
+# 函数：显示使用说明
+show_usage() {
+    echo -e "${BOLD}${GREEN}交易机器人状态检查脚本 v2.1${NC}"
+    echo -e "${CYAN}用法: $0 [选项]${NC}"
+    echo ""
+    echo -e "${YELLOW}选项:${NC}"
+    echo -e "  ${GREEN}--paradex${NC}     仅检查 Paradex 交易机器人状态"
+    echo -e "  ${GREEN}--grvt${NC}        仅检查 GRVT 交易机器人状态"
+    echo -e "  ${GREEN}--help${NC}        显示此帮助信息"
+    echo ""
+    echo -e "${YELLOW}示例:${NC}"
+    echo -e "  ${CYAN}$0${NC}            检查所有交易机器人"
+    echo -e "  ${CYAN}$0 --paradex${NC}  仅检查 Paradex"
+    echo -e "  ${CYAN}$0 --grvt${NC}     仅检查 GRVT"
+    echo ""
+    echo -e "${YELLOW}独立检查脚本:${NC}"
+    echo -e "  ${CYAN}./scripts/check_paradex.sh${NC}  专门检查 Paradex"
+    echo -e "  ${CYAN}./scripts/check_grvt.sh${NC}     专门检查 GRVT"
+}
+
+# 处理命令行参数
+case "$1" in
+    --paradex)
+        echo -e "${BOLD}${GREEN}=== 调用独立 Paradex 检查脚本 ===${NC}"
+        if [ -f "./scripts/check_paradex.sh" ]; then
+            chmod +x ./scripts/check_paradex.sh
+            ./scripts/check_paradex.sh
+        else
+            echo -e "${RED}错误: check_paradex.sh 脚本不存在${NC}"
+            exit 1
+        fi
+        exit 0
+        ;;
+    --grvt)
+        echo -e "${BOLD}${GREEN}=== 调用独立 GRVT 检查脚本 ===${NC}"
+        if [ -f "./scripts/check_grvt.sh" ]; then
+            chmod +x ./scripts/check_grvt.sh
+            ./scripts/check_grvt.sh
+        else
+            echo -e "${RED}错误: check_grvt.sh 脚本不存在${NC}"
+            exit 1
+        fi
+        exit 0
+        ;;
+    --help|-h)
+        show_usage
+        exit 0
+        ;;
+    "")
+        # 无参数，继续执行完整检查
+        ;;
+    *)
+        echo -e "${RED}错误: 未知参数 '$1'${NC}"
+        echo ""
+        show_usage
+        exit 1
+        ;;
+esac
 
 # 全局变量
 TOTAL_ISSUES=0
@@ -407,9 +468,22 @@ fi
 
 # 快捷操作提示
 echo -e "\n${BOLD}${GREEN}=== 快捷操作 ===${NC}"
-echo -e "${YELLOW}启动机器人:${NC} ./start_bots.sh"
-echo -e "${YELLOW}停止机器人:${NC} ./stop_bots.sh"
-echo -e "${YELLOW}重新检查状态:${NC} ./check_bots.sh"
+echo -e "${CYAN}=== 启动/停止操作 ===${NC}"
+echo -e "${YELLOW}启动所有机器人:${NC} ./scripts/start_bots.sh"
+echo -e "${YELLOW}启动 Paradex:${NC} ./scripts/start_paradex.sh"
+echo -e "${YELLOW}启动 GRVT:${NC} ./scripts/start_grvt.sh"
+echo -e "${YELLOW}停止所有机器人:${NC} ./scripts/stop_bots.sh"
+echo -e "${YELLOW}停止 Paradex:${NC} ./scripts/stop_paradex.sh"
+echo -e "${YELLOW}停止 GRVT:${NC} ./scripts/stop_grvt.sh"
+echo ""
+echo -e "${CYAN}=== 状态检查操作 ===${NC}"
+echo -e "${YELLOW}检查所有机器人:${NC} ./scripts/check_bots.sh"
+echo -e "${YELLOW}检查 Paradex:${NC} ./scripts/check_paradex.sh"
+echo -e "${YELLOW}检查 GRVT:${NC} ./scripts/check_grvt.sh"
+echo -e "${YELLOW}参数化检查 Paradex:${NC} ./scripts/check_bots.sh --paradex"
+echo -e "${YELLOW}参数化检查 GRVT:${NC} ./scripts/check_bots.sh --grvt"
+echo ""
+echo -e "${CYAN}=== 日志监控操作 ===${NC}"
 echo -e "${YELLOW}实时监控 Paradex:${NC} tail -f paradex_output.log"
 echo -e "${YELLOW}实时监控 GRVT:${NC} tail -f grvt_output.log"
 echo -e "${YELLOW}同时监控两个日志:${NC} tail -f paradex_output.log grvt_output.log"
