@@ -85,8 +85,8 @@ if [ -d "$PARADEX_ENV_PATH" ]; then
         
         # 检查关键依赖
         if [ -f "./para_requirements.txt" ]; then
-            local missing_deps=$($PARADEX_ENV_PATH/bin/python3 -m pip check 2>&1 | grep -c "No broken requirements found" || echo "0")
-            if [ "$missing_deps" -eq 0 ]; then
+            missing_deps=$($PARADEX_ENV_PATH/bin/python3 -m pip check 2>&1 | grep -c "No broken requirements found" || echo "0")
+            if [ -n "$missing_deps" ] && [ "$missing_deps" -eq 0 ]; then
                 log_issue "warning" "Paradex 环境可能存在依赖问题"
             else
                 echo -e "${CYAN}   依赖状态: 正常${NC}"
@@ -143,7 +143,7 @@ PARADEX_PROCESSES=$(ps aux | grep runbot.py | grep paradex | grep -v grep)
 if [ -z "$PARADEX_PROCESSES" ]; then
     log_issue "critical" "Paradex 交易机器人未在运行"
 else
-    local bot_count=$(echo "$PARADEX_PROCESSES" | wc -l)
+    bot_count=$(echo "$PARADEX_PROCESSES" | wc -l)
     log_success "发现 $bot_count 个运行中的 Paradex 机器人"
     
     echo "$PARADEX_PROCESSES" | while read -r line; do
@@ -159,7 +159,7 @@ fi
 # 检查 Paradex PID 文件
 echo -e "\n${BOLD}${GREEN}=== Paradex PID 文件状态 ===${NC}"
 if [ -f ".paradex_pid" ]; then
-    local pid=$(cat .paradex_pid 2>/dev/null)
+    pid=$(cat .paradex_pid 2>/dev/null)
     if [ -n "$pid" ] && ps -p "$pid" > /dev/null 2>&1; then
         log_success "Paradex PID 文件有效 (PID: $pid)"
         check_process_details "$pid"
@@ -174,32 +174,32 @@ fi
 # 检查 Paradex 日志文件
 echo -e "\n${BOLD}${GREEN}=== Paradex 日志状态 ===${NC}"
 if [ -f "$PARADEX_LOG_FILE" ]; then
-    local size=$(du -h "$PARADEX_LOG_FILE" | cut -f1)
-    local lines=$(wc -l < "$PARADEX_LOG_FILE")
-    local modified=$(stat -c %y "$PARADEX_LOG_FILE" 2>/dev/null | cut -d'.' -f1 || echo "未知")
+    size=$(du -h "$PARADEX_LOG_FILE" | cut -f1)
+    lines=$(wc -l < "$PARADEX_LOG_FILE")
+    modified=$(stat -c %y "$PARADEX_LOG_FILE" 2>/dev/null | cut -d'.' -f1 || echo "未知")
     
     log_success "$PARADEX_LOG_FILE"
     echo -e "${CYAN}   大小: $size, 行数: $lines${NC}"
     echo -e "${CYAN}   修改时间: $modified${NC}"
     
     # 检查日志文件是否过大
-    local size_mb=$(du -m "$PARADEX_LOG_FILE" | cut -f1)
-    if [ "$size_mb" -gt 100 ]; then
+    size_mb=$(du -m "$PARADEX_LOG_FILE" | cut -f1)
+    if [ -n "$size_mb" ] && [ "$size_mb" -gt 100 ]; then
         log_issue "warning" "日志文件过大 (${size}MB)，建议清理"
     fi
     
-    # 检查最近的错误
-    local recent_errors=$(tail -100 "$PARADEX_LOG_FILE" | grep -i "error\|exception\|failed" | wc -l)
-    if [ "$recent_errors" -gt 0 ]; then
-        log_issue "warning" "最近100行中发现 $recent_errors 个错误"
+    # 检查错误日志
+    error_count=$(grep -i "error\|exception\|failed\|critical" "$PARADEX_LOG_FILE" | tail -10 | wc -l)
+    if [ -n "$error_count" ] && [ "$error_count" -gt 0 ]; then
+        log_issue "warning" "最近100行中发现 $error_count 个错误"
         echo -e "${YELLOW}   最新错误:${NC}"
         tail -100 "$PARADEX_LOG_FILE" | grep -i "error\|exception\|failed" | tail -3 | sed 's/^/     /'
     else
         echo -e "${CYAN}   ✅ 最近无错误记录${NC}"
     fi
     
-    # 检查日志活跃度
-    local last_log_time=$(tail -1 "$PARADEX_LOG_FILE" | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}' | head -1)
+    # 检查最后日志时间
+    last_log_time=$(tail -1 "$PARADEX_LOG_FILE" | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}' | head -1)
     if [ -n "$last_log_time" ]; then
         echo -e "${CYAN}   最后日志时间: $last_log_time${NC}"
     fi
@@ -218,7 +218,7 @@ if [ "$PARADEX_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
     
     if [ -f "$PARADEX_LOG_FILE" ]; then
         # 检查当前回撤率
-        local current_drawdown=$(tail -50 "$PARADEX_LOG_FILE" | grep -i "current.*drawdown.*%\|drawdown.*rate.*%" | tail -1)
+        current_drawdown=$(tail -50 "$PARADEX_LOG_FILE" | grep -i "current.*drawdown.*%\|drawdown.*rate.*%" | tail -1)
         if [ -n "$current_drawdown" ]; then
             echo -e "${CYAN}   当前回撤: $current_drawdown${NC}"
             
@@ -236,7 +236,7 @@ if [ "$PARADEX_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
         fi
         
         # 检查是否正在执行止损
-        local active_stop_loss=$(tail -20 "$PARADEX_LOG_FILE" | grep -i "executing.*stop.loss\|placing.*stop.loss\|stop.loss.*pending")
+        active_stop_loss=$(tail -20 "$PARADEX_LOG_FILE" | grep -i "executing.*stop.loss\|placing.*stop.loss\|stop.loss.*pending")
         if [ -n "$active_stop_loss" ]; then
             log_issue "critical" "Paradex 正在执行止损操作!"
             echo -e "${RED}   🔄 详情: $active_stop_loss${NC}"

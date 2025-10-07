@@ -109,7 +109,7 @@ fi
 echo -e "\n${GREEN}=== 日志文件 ===${NC}"
 for log_file in "paradex_output.log" "grvt_output.log"; do
     if [ -f "$log_file" ]; then
-        local size=$(du -h "$log_file" | cut -f1)
+        size=$(du -h "$log_file" | cut -f1)
         echo -e "${CYAN}$log_file (大小: $size)${NC}"
     else
         echo -e "${YELLOW}$log_file (不存在)${NC}"

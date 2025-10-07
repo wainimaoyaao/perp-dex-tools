@@ -157,7 +157,7 @@ main() {
     # 显示将要停止的进程
     echo -e "${YELLOW}将要停止的 Paradex 进程:${NC}"
     for pid in $PARADEX_PIDS; do
-        local cmd=$(ps -p "$pid" -o command= 2>/dev/null)
+        cmd=$(ps -p "$pid" -o command= 2>/dev/null)
         echo -e "${CYAN}  PID: $pid - $cmd${NC}"
     done
     

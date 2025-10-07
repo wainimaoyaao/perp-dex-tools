@@ -85,8 +85,8 @@ if [ -d "$GRVT_ENV_PATH" ]; then
         
         # 检查关键依赖
         if [ -f "./grvt_requirements.txt" ]; then
-            local missing_deps=$($GRVT_ENV_PATH/bin/python3 -m pip check 2>&1 | grep -c "No broken requirements found" || echo "0")
-            if [ "$missing_deps" -eq 0 ]; then
+            missing_deps=$($GRVT_ENV_PATH/bin/python3 -m pip check 2>&1 | grep -c "No broken requirements found" || echo "0")
+            if [ -n "$missing_deps" ] && [ "$missing_deps" -eq 0 ]; then
                 log_issue "warning" "GRVT 环境可能存在依赖问题"
             else
                 echo -e "${CYAN}   依赖状态: 正常${NC}"
@@ -143,7 +143,7 @@ GRVT_PROCESSES=$(ps aux | grep runbot.py | grep grvt | grep -v grep)
 if [ -z "$GRVT_PROCESSES" ]; then
     log_issue "critical" "GRVT 交易机器人未在运行"
 else
-    local bot_count=$(echo "$GRVT_PROCESSES" | wc -l)
+    bot_count=$(echo "$GRVT_PROCESSES" | wc -l)
     log_success "发现 $bot_count 个运行中的 GRVT 机器人"
     
     echo "$GRVT_PROCESSES" | while read -r line; do
@@ -159,7 +159,7 @@ fi
 # 检查 GRVT PID 文件
 echo -e "\n${BOLD}${GREEN}=== GRVT PID 文件状态 ===${NC}"
 if [ -f ".grvt_pid" ]; then
-    local pid=$(cat .grvt_pid 2>/dev/null)
+    pid=$(cat .grvt_pid 2>/dev/null)
     if [ -n "$pid" ] && ps -p "$pid" > /dev/null 2>&1; then
         log_success "GRVT PID 文件有效 (PID: $pid)"
         check_process_details "$pid"
@@ -174,23 +174,23 @@ fi
 # 检查 GRVT 日志文件
 echo -e "\n${BOLD}${GREEN}=== GRVT 日志状态 ===${NC}"
 if [ -f "$GRVT_LOG_FILE" ]; then
-    local size=$(du -h "$GRVT_LOG_FILE" | cut -f1)
-    local lines=$(wc -l < "$GRVT_LOG_FILE")
-    local modified=$(stat -c %y "$GRVT_LOG_FILE" 2>/dev/null | cut -d'.' -f1 || echo "未知")
+    size=$(du -h "$GRVT_LOG_FILE" | cut -f1)
+    lines=$(wc -l < "$GRVT_LOG_FILE")
+    modified=$(stat -c %y "$GRVT_LOG_FILE" 2>/dev/null | cut -d'.' -f1 || echo "未知")
     
     log_success "$GRVT_LOG_FILE"
     echo -e "${CYAN}   大小: $size, 行数: $lines${NC}"
     echo -e "${CYAN}   修改时间: $modified${NC}"
     
     # 检查日志文件是否过大
-    local size_mb=$(du -m "$GRVT_LOG_FILE" | cut -f1)
-    if [ "$size_mb" -gt 100 ]; then
+    size_mb=$(du -m "$GRVT_LOG_FILE" | cut -f1)
+    if [ -n "$size_mb" ] && [ "$size_mb" -gt 100 ]; then
         log_issue "warning" "日志文件过大 (${size}MB)，建议清理"
     fi
     
     # 检查最近的错误
-    local recent_errors=$(tail -100 "$GRVT_LOG_FILE" | grep -i "error\|exception\|failed" | wc -l)
-    if [ "$recent_errors" -gt 0 ]; then
+    recent_errors=$(tail -100 "$GRVT_LOG_FILE" | grep -i "error\|exception\|failed" | wc -l)
+    if [ -n "$recent_errors" ] && [ "$recent_errors" -gt 0 ]; then
         log_issue "warning" "最近100行中发现 $recent_errors 个错误"
         echo -e "${YELLOW}   最新错误:${NC}"
         tail -100 "$GRVT_LOG_FILE" | grep -i "error\|exception\|failed" | tail -3 | sed 's/^/     /'
@@ -199,7 +199,7 @@ if [ -f "$GRVT_LOG_FILE" ]; then
     fi
     
     # 检查日志活跃度
-    local last_log_time=$(tail -1 "$GRVT_LOG_FILE" | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}' | head -1)
+    last_log_time=$(tail -1 "$GRVT_LOG_FILE" | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}' | head -1)
     if [ -n "$last_log_time" ]; then
         echo -e "${CYAN}   最后日志时间: $last_log_time${NC}"
     fi
@@ -218,12 +218,11 @@ if [ "$GRVT_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
     
     if [ -f "$GRVT_LOG_FILE" ]; then
         # 检查当前回撤率
-        local current_drawdown=$(tail -50 "$GRVT_LOG_FILE" | grep -i "current.*drawdown.*%\|drawdown.*rate.*%" | tail -1)
+        current_drawdown=$(tail -50 "$GRVT_LOG_FILE" | grep -i "current.*drawdown.*%\|drawdown.*rate.*%" | tail -1)
         if [ -n "$current_drawdown" ]; then
             echo -e "${CYAN}   当前回撤: $current_drawdown${NC}"
             
-            # 提取回撤百分比进行风险评估
-            local drawdown_pct=$(echo "$current_drawdown" | grep -o '[0-9]\+\.[0-9]\+%\|[0-9]\+%' | head -1 | tr -d '%')
+            drawdown_pct=$(echo "$current_drawdown" | grep -o '[0-9]\+\.[0-9]\+%\|[0-9]\+%' | head -1 | tr -d '%')
             if [ -n "$drawdown_pct" ]; then
                 if (( $(echo "$drawdown_pct > 15" | bc -l 2>/dev/null || echo "0") )); then
                     log_issue "critical" "GRVT 回撤率过高: ${drawdown_pct}%"
@@ -236,7 +235,7 @@ if [ "$GRVT_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
         fi
         
         # 检查是否正在执行止损
-        local active_stop_loss=$(tail -20 "$GRVT_LOG_FILE" | grep -i "executing.*stop.loss\|placing.*stop.loss\|stop.loss.*pending")
+        active_stop_loss=$(tail -20 "$GRVT_LOG_FILE" | grep -i "executing.*stop.loss\|placing.*stop.loss\|stop.loss.*pending")
         if [ -n "$active_stop_loss" ]; then
             log_issue "critical" "GRVT 正在执行止损操作!"
             echo -e "${RED}   🔄 详情: $active_stop_loss${NC}"

@@ -424,7 +424,7 @@ show_log_info
 echo -e "\n${BLUE}${BOLD}=== 清理陈旧文件 ===${NC}"
 for pid_file in ".paradex_pid" ".grvt_pid"; do
     if [ -f "$pid_file" ]; then
-        local pid=$(cat "$pid_file" 2>/dev/null)
+        pid=$(cat "$pid_file" 2>/dev/null)
         if [ -n "$pid" ] && ! ps -p "$pid" > /dev/null 2>&1; then
             rm -f "$pid_file"
             log_action "SUCCESS" "已清理陈旧的 $pid_file 文件"

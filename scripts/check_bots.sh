@@ -142,8 +142,8 @@ if [ -d "./env" ]; then
         
         # 检查关键依赖
         if [ -f "./requirements.txt" ]; then
-            local missing_deps=$(./env/bin/python3 -m pip check 2>&1 | grep -c "No broken requirements found" || echo "0")
-            if [ "$missing_deps" -eq 0 ]; then
+            missing_deps=$(./env/bin/python3 -m pip check 2>&1 | grep -c "No broken requirements found" || echo "0")
+            if [ -n "$missing_deps" ] && [ "$missing_deps" -eq 0 ]; then
                 log_issue "warning" "env 环境可能存在依赖问题"
             else
                 echo -e "${CYAN}   依赖状态: 正常${NC}"
@@ -165,8 +165,8 @@ if [ -d "./para_env" ]; then
         
         # 检查关键依赖
         if [ -f "./para_requirements.txt" ]; then
-            local missing_deps=$(./para_env/bin/python3 -m pip check 2>&1 | grep -c "No broken requirements found" || echo "0")
-            if [ "$missing_deps" -eq 0 ]; then
+            missing_deps=$(./para_env/bin/python3 -m pip check 2>&1 | grep -c "No broken requirements found" || echo "0")
+            if [ -n "$missing_deps" ] && [ "$missing_deps" -eq 0 ]; then
                 log_issue "warning" "para_env 环境可能存在依赖问题"
             else
                 echo -e "${CYAN}   依赖状态: 正常${NC}"
@@ -185,23 +185,23 @@ if [ -f ".env" ]; then
     log_success ".env 配置文件存在"
     
     # 检查关键配置项（不显示具体值）
-    local paradex_configs=$(grep -c "PARADEX_" .env 2>/dev/null || echo "0")
-    local grvt_configs=$(grep -c "GRVT_" .env 2>/dev/null || echo "0")
+    paradex_configs=$(grep -c "PARADEX_" .env 2>/dev/null || echo "0")
+    grvt_configs=$(grep -c "GRVT_" .env 2>/dev/null || echo "0")
     
-    if [ "$paradex_configs" -gt 0 ]; then
+    if [ -n "$paradex_configs" ] && [ "$paradex_configs" -gt 0 ]; then
         echo -e "${CYAN}   Paradex 配置项: $paradex_configs 个${NC}"
     else
         log_issue "warning" "缺少 Paradex 配置"
     fi
     
-    if [ "$grvt_configs" -gt 0 ]; then
+    if [ -n "$grvt_configs" ] && [ "$grvt_configs" -gt 0 ]; then
         echo -e "${CYAN}   GRVT 配置项: $grvt_configs 个${NC}"
     else
         log_issue "warning" "缺少 GRVT 配置"
     fi
     
     # 检查配置文件权限
-    local env_perms=$(stat -c "%a" .env 2>/dev/null || echo "unknown")
+    env_perms=$(stat -c "%a" .env 2>/dev/null || echo "unknown")
     if [ "$env_perms" != "600" ] && [ "$env_perms" != "unknown" ]; then
         log_issue "warning" ".env 文件权限不安全 ($env_perms)，建议设置为 600"
     fi
@@ -216,7 +216,7 @@ RUNNING_PROCESSES=$(ps aux | grep runbot.py | grep -v grep)
 if [ -z "$RUNNING_PROCESSES" ]; then
     log_issue "critical" "没有运行中的交易机器人"
 else
-    local bot_count=$(echo "$RUNNING_PROCESSES" | wc -l)
+    bot_count=$(echo "$RUNNING_PROCESSES" | wc -l)
     log_success "发现 $bot_count 个运行中的交易机器人"
     
     echo "$RUNNING_PROCESSES" | while read -r line; do

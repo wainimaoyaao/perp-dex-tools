@@ -149,14 +149,14 @@ if ps -p $PARADEX_PID > /dev/null 2>&1; then
     # 检查日志中的初始化状态
     if [ -f "$PARADEX_LOG_FILE" ]; then
         sleep 2
-        local init_status=$(tail -10 "$PARADEX_LOG_FILE" | grep -i "initialized\|started\|ready\|connected" | tail -1)
+        init_status=$(tail -10 "$PARADEX_LOG_FILE" | grep -i "initialized\|started\|ready\|connected" | tail -1)
         if [ -n "$init_status" ]; then
             echo -e "${CYAN}状态: $init_status${NC}"
         fi
         
         # 检查是否有错误
-        local errors=$(tail -10 "$PARADEX_LOG_FILE" | grep -i "error\|exception\|failed" | wc -l)
-        if [ "$errors" -gt 0 ]; then
+        errors=$(tail -10 "$PARADEX_LOG_FILE" | grep -i "error\|exception\|failed" | wc -l)
+        if [ -n "$errors" ] && [ "$errors" -gt 0 ]; then
             echo -e "${YELLOW}⚠️  检测到 $errors 个错误，请检查日志${NC}"
         fi
     fi
