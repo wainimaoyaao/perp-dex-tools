@@ -318,14 +318,36 @@ class ParadexClient(BaseExchangeClient):
                 
                 # Test if existing connection is still alive
                 if hasattr(self.paradex.ws_client, 'ws') and self.paradex.ws_client.ws:
-                    # Check if WebSocket is still open
-                    if self.paradex.ws_client.ws.closed:
-                        self.logger.log("WebSocket connection is closed, reconnecting...", "WARN")
+                    # Check if WebSocket is still open using safe attribute access
+                    try:
+                        ws_connection = self.paradex.ws_client.ws
+                        connection_closed = False
+                        
+                        # Check connection state using available attributes
+                        if hasattr(ws_connection, 'state'):
+                            # Use state attribute if available
+                            if str(ws_connection.state) in ['CLOSED', 'CLOSING']:
+                                connection_closed = True
+                        elif hasattr(ws_connection, 'closed'):
+                            # Use closed attribute if available
+                            connection_closed = ws_connection.closed
+                        else:
+                            # If we can't determine state, assume connection is healthy
+                            # This prevents unnecessary reconnections
+                            connection_closed = False
+                        
+                        if connection_closed:
+                            self.logger.log("WebSocket connection is closed, reconnecting...", "WARN")
+                            self._ws_connected = False
+                            continue
+                        else:
+                            # Connection appears to be active
+                            return
+                    except AttributeError:
+                        # If we can't check the state, assume connection needs to be re-established
+                        self.logger.log("Cannot determine WebSocket state, will reconnect...", "DEBUG")
                         self._ws_connected = False
                         continue
-                    else:
-                        # Connection appears to be active
-                        return
                 else:
                     # No WebSocket object, need to reconnect
                     self._ws_connected = False
@@ -365,14 +387,39 @@ class ParadexClient(BaseExchangeClient):
             if hasattr(self, '_ws_order_update_handler'):
                 # Check if connection is still alive
                 if hasattr(self, '_ws_connected') and self._ws_connected:
-                    if hasattr(self.paradex.ws_client, 'ws') and self.paradex.ws_client.ws:
-                        if self.paradex.ws_client.ws.closed:
-                            self.logger.log("WebSocket connection lost, attempting reconnection...", "WARN")
-                            await self._handle_websocket_error(Exception("WebSocket connection closed"))
-                    else:
-                        # No WebSocket object, connection is lost
-                        self.logger.log("WebSocket object missing, attempting reconnection...", "WARN")
-                        await self._handle_websocket_error(Exception("WebSocket object missing"))
+                    # Try to check connection status more safely
+                    try:
+                        # Check if ws_client exists and has a connection
+                        if hasattr(self.paradex.ws_client, 'ws') and self.paradex.ws_client.ws:
+                            # For ClientConnection objects, check if the connection is still active
+                            # by attempting to access connection state or using a different approach
+                            ws_connection = self.paradex.ws_client.ws
+                            
+                            # Check if the connection object has state attributes
+                            if hasattr(ws_connection, 'state'):
+                                # Use state attribute if available
+                                if str(ws_connection.state) in ['CLOSED', 'CLOSING']:
+                                    self.logger.log("WebSocket connection state indicates closed, attempting reconnection...", "WARN")
+                                    await self._handle_websocket_error(Exception("WebSocket connection closed"))
+                            elif hasattr(ws_connection, 'closed'):
+                                # Use closed attribute if available
+                                if ws_connection.closed:
+                                    self.logger.log("WebSocket connection closed, attempting reconnection...", "WARN")
+                                    await self._handle_websocket_error(Exception("WebSocket connection closed"))
+                            else:
+                                # If we can't determine the state, assume connection is healthy
+                                # This prevents false positives when the connection is actually working
+                                pass
+                        else:
+                            # No WebSocket object, connection is lost
+                            self.logger.log("WebSocket object missing, attempting reconnection...", "WARN")
+                            await self._handle_websocket_error(Exception("WebSocket object missing"))
+                    except AttributeError as attr_error:
+                        # Handle attribute errors gracefully - don't trigger reconnection for attribute issues
+                        self.logger.log(f"WebSocket attribute check failed (connection may still be healthy): {attr_error}", "DEBUG")
+                    except Exception as check_error:
+                        # For other errors during health check, log but don't necessarily reconnect
+                        self.logger.log(f"WebSocket health check error: {check_error}", "DEBUG")
         except Exception as e:
             self.logger.log(f"Error during WebSocket health check: {e}", "WARN")
 
