@@ -151,6 +151,10 @@ class ParadexClient(BaseExchangeClient):
 
         self._order_update_handler = None
         self.order_size_increment = ''
+        
+        # Partial fill order merging functionality (similar to Extended exchange)
+        self.partially_filled_size = 0
+        self.partially_filled_avg_price = 0
 
     def _initialize_paradex_client(self) -> None:
         """Initialize the Paradex client with L2 credentials only."""
@@ -480,6 +484,27 @@ class ParadexClient(BaseExchangeClient):
         # Get current market prices
         attempt = 0
         active_close_orders = await self._get_active_close_orders(contract_id)
+        
+        # PATCH: (for partially filled orders) Adjust the quantity to add partially filled order size so that we can close them together
+        # cache these just in case order fails to place
+        prev_partially_filled_size = self.partially_filled_size
+        prev_partially_filled_avg_price = self.partially_filled_avg_price
+        
+        original_quantity = quantity
+        adjusted_price = price
+        
+        if self.partially_filled_size > 0:
+            self.logger.log(f"Adding partially_filled_size {self.partially_filled_size} and partially_filled_avg_price {self.partially_filled_avg_price} to the close order", "INFO")
+            quantity = quantity + self.partially_filled_size
+            expected_tp_price_for_partial_fills = (1 + self.config.take_profit/100) * self.partially_filled_avg_price
+            adjusted_price = (price * original_quantity + expected_tp_price_for_partial_fills * self.partially_filled_size) / quantity
+            self.logger.log(f"Updated close order quantity to {quantity} and adjusted_price to {adjusted_price}", "INFO")
+
+            # reset to 0
+            self.partially_filled_size = 0
+            self.partially_filled_avg_price = 0
+            self.logger.log(f"Reset partially_filled_size and partially_filled_avg_price to 0", "INFO")
+        
         while True:
             attempt += 1
             if attempt % 5 == 0:
@@ -488,6 +513,10 @@ class ParadexClient(BaseExchangeClient):
 
                 if current_close_orders - active_close_orders > 1:
                     self.logger.log(f"[CLOSE] ERROR: Active close orders abnormal: {active_close_orders}, {current_close_orders}", "ERROR")
+                    # reset to previous values
+                    self.partially_filled_size = prev_partially_filled_size
+                    self.partially_filled_avg_price = prev_partially_filled_avg_price
+                    self.logger.log(f"Reverted partially_filled_size and partially_filled_avg_price to {prev_partially_filled_size} and {prev_partially_filled_avg_price}", "INFO")
                     raise Exception(f"[CLOSE] ERROR: Active close orders abnormal: {active_close_orders}, {current_close_orders}")
                 else:
                     active_close_orders = current_close_orders
@@ -501,40 +530,52 @@ class ParadexClient(BaseExchangeClient):
             # Adjust order price based on market conditions and side
             if side.lower() == 'sell':
                 # For sell orders, ensure price is above best bid to be a maker order
-                if price <= best_bid:
-                    adjusted_price = best_bid + self.config.tick_size
+                if adjusted_price <= best_bid:
+                    final_price = best_bid + self.config.tick_size
                 else:
-                    adjusted_price = price
+                    final_price = adjusted_price
             elif side.lower() == 'buy':
                 # For buy orders, ensure price is below best ask to be a maker order
-                if price >= best_ask:
-                    adjusted_price = best_ask - self.config.tick_size
+                if adjusted_price >= best_ask:
+                    final_price = best_ask - self.config.tick_size
                 else:
-                    adjusted_price = price
+                    final_price = adjusted_price
 
-            adjusted_price = self.round_to_tick(adjusted_price)
-            order_result = await self.place_post_only_order(contract_id, quantity, adjusted_price, order_side)
-            order_status = order_result.status
-            order_id = order_result.order_id
+            final_price = self.round_to_tick(final_price)
+            
+            try:
+                order_result = await self.place_post_only_order(contract_id, quantity, final_price, order_side)
+                order_status = order_result.status
+                order_id = order_result.order_id
 
-            if order_status == 'CLOSED':
-                remaining_size = order_result.remaining_size
-                cancel_reason = order_result.cancel_reason
-                if remaining_size == 0:
+                if order_status == 'CLOSED':
+                    remaining_size = order_result.remaining_size
+                    cancel_reason = order_result.cancel_reason
+                    if remaining_size == 0:
+                        break
+                    elif cancel_reason == 'POST_ONLY_WOULD_CROSS':
+                        continue
+                    else:
+                        # reset to previous values on error
+                        self.partially_filled_size = prev_partially_filled_size
+                        self.partially_filled_avg_price = prev_partially_filled_avg_price
+                        self.logger.log(f"Reverted partially_filled_size and partially_filled_avg_price to {prev_partially_filled_size} and {prev_partially_filled_avg_price}", "INFO")
+                        raise Exception(f"[CLOSE] [{order_id}] Error placing order: {cancel_reason}")
+                else:
                     break
-                elif cancel_reason == 'POST_ONLY_WOULD_CROSS':
-                    continue
-                else:
-                    raise Exception(f"[CLOSE] [{order_id}] Error placing order: {cancel_reason}")
-            else:
-                break
+            except Exception as e:
+                # reset to previous values on error
+                self.partially_filled_size = prev_partially_filled_size
+                self.partially_filled_avg_price = prev_partially_filled_avg_price
+                self.logger.log(f"Reverted partially_filled_size and partially_filled_avg_price to {prev_partially_filled_size} and {prev_partially_filled_avg_price}", "INFO")
+                raise e
 
         return OrderResult(
             success=True,
             order_id=order_id,
             side=side,
             size=quantity,
-            price=adjusted_price,
+            price=final_price,
             status=order_status
         )
 
@@ -842,7 +883,7 @@ class ParadexClient(BaseExchangeClient):
         
         # Return 0 but log it clearly
         self.logger.log("Returning 0 as fallback networth value", "WARNING")
-        return Decimal('0')
+        return Decimal(0)
 
     async def get_unrealized_pnl_and_margin(self) -> Tuple[Decimal, Decimal]:
         """
@@ -871,7 +912,7 @@ class ParadexClient(BaseExchangeClient):
             
         except Exception as e:
             self.logger.log(f"Failed to get unrealized PnL and margin: {e}", "ERROR")
-            return Decimal('0'), Decimal('0')
+            return Decimal(0), Decimal(0)
 
     async def get_position_loss_value(self, symbol: str) -> float:
         """Get position loss value for a specific symbol."""

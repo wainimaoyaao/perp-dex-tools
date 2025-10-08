@@ -85,7 +85,7 @@ class TradingBot:
         self.current_order_status = None
         self.order_filled_event = asyncio.Event()
         self.order_canceled_event = asyncio.Event()
-        self.order_filled_amount = Decimal('0')  # Initialize order filled amount
+        self.order_filled_amount = 0  # Initialize order filled amount
         self.shutdown_requested = False
         self.loop = None
         self.trading_paused = False  # Flag to pause new orders during medium drawdown
@@ -180,8 +180,14 @@ class TradingBot:
                     self.logger.log(f"[{order_type}] [{order_id}] {status} "
                                     f"{message.get('size')} @ {message.get('price')}", "INFO")
                 elif status == "PARTIALLY_FILLED":
-                    self.logger.log(f"[{order_type}] [{order_id}] {status} "
-                                    f"{filled_size} @ {message.get('price')}", "INFO")
+                    if order_type == "OPEN":
+                        self.order_filled_amount = filled_size
+                        self.logger.log(f"[{order_type}] [{order_id}] {status} "
+                                        f"Filled: {filled_size}/{message.get('size')} @ {message.get('price')} "
+                                        f"(Cumulative filled: {self.order_filled_amount})", "INFO")
+                    else:
+                        self.logger.log(f"[{order_type}] [{order_id}] {status} "
+                                        f"Filled: {filled_size}/{message.get('size')} @ {message.get('price')}", "INFO")
                 else:
                     self.logger.log(f"[{order_type}] [{order_id}] {status} "
                                     f"{message.get('size')} @ {message.get('price')}", "INFO")
@@ -229,7 +235,7 @@ class TradingBot:
             # Reset state before placing order
             self.order_filled_event.clear()
             self.current_order_status = 'OPEN'
-            self.order_filled_amount = 0.0
+            self.order_filled_amount = 0
 
             # Place the order
             order_result = await self.exchange_client.place_open_order(
@@ -303,6 +309,13 @@ class TradingBot:
 
             if self.config.exchange == "lighter":
                 current_order_status = self.exchange_client.current_order.status
+            elif self.config.exchange == "extended":
+                # For extended exchange, check order status from open_orders dict
+                if order_id in self.exchange_client.open_orders:
+                    current_order_status = self.exchange_client.open_orders[order_id].get('status', 'UNKNOWN')
+                else:
+                    order_info = await self.exchange_client.get_order_info(order_id)
+                    current_order_status = order_info.status if order_info else 'UNKNOWN'
             else:
                 order_info = await self.exchange_client.get_order_info(order_id)
                 current_order_status = order_info.status
@@ -315,6 +328,13 @@ class TradingBot:
                 await asyncio.sleep(5)
                 if self.config.exchange == "lighter":
                     current_order_status = self.exchange_client.current_order.status
+                elif self.config.exchange == "extended":
+                    # For extended exchange, check order status from open_orders dict
+                    if order_id in self.exchange_client.open_orders:
+                        current_order_status = self.exchange_client.open_orders[order_id].get('status', 'UNKNOWN')
+                    else:
+                        order_info = await self.exchange_client.get_order_info(order_id)
+                        current_order_status = order_info.status if order_info else 'UNKNOWN'
                 else:
                     order_info = await self.exchange_client.get_order_info(order_id)
                     current_order_status = order_info.status
@@ -349,16 +369,29 @@ class TradingBot:
 
                 if self.config.exchange == "backpack":
                     self.order_filled_amount = cancel_result.filled_size
+                elif self.config.exchange == "extended":
+                    # For extended exchange, get filled amount from partially_filled_size
+                    self.order_filled_amount = self.exchange_client.partially_filled_size
                 else:
                     # Wait for cancel event or timeout
                     if not self.order_canceled_event.is_set():
                         try:
                             await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
                         except asyncio.TimeoutError:
-                            order_info = await self.exchange_client.get_order_info(order_id)
+                            pass
+                    
+                    # Always verify filled amount from order info for consistency
+                    # This ensures we get the correct filled_size regardless of WebSocket timing
+                    try:
+                        order_info = await self.exchange_client.get_order_info(order_id)
+                        if order_info.filled_size > 0:
                             self.order_filled_amount = order_info.filled_size
+                            self.logger.log(f"[OPEN] [{order_id}] Retrieved filled amount from order info: {self.order_filled_amount}", "INFO")
+                    except Exception as e:
+                        self.logger.log(f"[OPEN] [{order_id}] Failed to get order info: {e}", "WARNING")
 
             if self.order_filled_amount > 0:
+                self.logger.log(f"[CLOSE] Processing partial fill: {self.order_filled_amount} @ {filled_price}", "INFO")
                 close_side = self.config.close_order_side
                 if self.config.aster_boost:
                     close_order_result = await self.exchange_client.place_close_order(

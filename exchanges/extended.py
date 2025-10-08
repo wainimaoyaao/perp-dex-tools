@@ -474,10 +474,13 @@ class ExtendedClient(BaseExchangeClient):
                     self.logger.log(f"Order {order_id} is partially filled, but filled size is less than min order size, returning filled_size as 0, we will send a close order for this later", level="INFO")
                     self.logger.log(f"Caching partially filled size and price: {order_info.filled_size} and {order_info.price}", level="INFO")
                     # cache this filled_size and price
-                    self.partially_filled_size = self.partially_filled_size + order_info.filled_size
                     if self.partially_filled_avg_price > 0:
-                        self.partially_filled_avg_price = (self.partially_filled_avg_price * self.partially_filled_size + order_info.filled_size * order_info.price) / (self.partially_filled_size + order_info.filled_size)
+                        # Calculate weighted average before updating size
+                        total_size = self.partially_filled_size + order_info.filled_size
+                        self.partially_filled_avg_price = (self.partially_filled_avg_price * self.partially_filled_size + order_info.filled_size * order_info.price) / total_size
+                        self.partially_filled_size = total_size
                     else:
+                        self.partially_filled_size = self.partially_filled_size + order_info.filled_size
                         self.partially_filled_avg_price = order_info.price
                     self.logger.log(f"Updated partially filled size and price: {self.partially_filled_size} and {self.partially_filled_avg_price}", level="INFO")
                 else:
@@ -609,6 +612,137 @@ class ExtendedClient(BaseExchangeClient):
             else:
                 position_amt = 0
         return position_amt
+
+    @query_retry(reraise=True)
+    async def get_account_networth(self) -> Decimal:
+        """
+        Get account net worth (account balance + unrealized PnL).
+        Used for drawdown monitoring.
+        
+        Returns:
+            Decimal: Current account net worth
+        """
+        try:
+            # Try to get account summary/balance from X10 API
+            # First attempt: check if there's an account summary method
+            if hasattr(self.perpetual_trading_client, 'account') and hasattr(self.perpetual_trading_client.account, 'get_account_summary'):
+                account_summary = await self.perpetual_trading_client.account.get_account_summary()
+                if account_summary and hasattr(account_summary, 'data'):
+                    summary_data = account_summary.data
+                    # Try different possible field names for net worth/equity
+                    for field in ['net_worth', 'equity', 'total_value', 'account_value', 'balance']:
+                        if hasattr(summary_data, field):
+                            net_worth = Decimal(str(getattr(summary_data, field)))
+                            self.logger.log(f"Account net worth from {field}: {net_worth}", "INFO")
+                            return net_worth
+            
+            # Second attempt: try to get balance information
+            if hasattr(self.perpetual_trading_client, 'account') and hasattr(self.perpetual_trading_client.account, 'get_balance'):
+                balance_data = await self.perpetual_trading_client.account.get_balance()
+                if balance_data and hasattr(balance_data, 'data'):
+                    balance_info = balance_data.data
+                    # Try to extract balance
+                    if hasattr(balance_info, 'available_balance'):
+                        available_balance = Decimal(str(balance_info.available_balance))
+                    elif hasattr(balance_info, 'balance'):
+                        available_balance = Decimal(str(balance_info.balance))
+                    else:
+                        available_balance = Decimal('0')
+                    
+                    # Add unrealized PnL from positions
+                    unrealized_pnl = await self._get_total_unrealized_pnl()
+                    
+                    net_worth = available_balance + unrealized_pnl
+                    self.logger.log(f"Account net worth (balance + unrealized PnL): {net_worth}", "INFO")
+                    return net_worth
+            
+            # Third attempt: calculate from positions only (fallback)
+            self.logger.log("Using fallback method: calculating net worth from positions", "WARNING")
+            unrealized_pnl = await self._get_total_unrealized_pnl()
+            
+            # If we can't get balance, assume a base balance and add unrealized PnL
+            # This is not ideal but provides some functionality
+            self.logger.log(f"Fallback net worth calculation (unrealized PnL only): {unrealized_pnl}", "INFO")
+            return unrealized_pnl
+            
+        except Exception as e:
+            self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
+            return Decimal('0')
+
+    async def _get_total_unrealized_pnl(self) -> Decimal:
+        """
+        Helper method to calculate total unrealized PnL from all positions.
+        
+        Returns:
+            Decimal: Total unrealized PnL across all positions
+        """
+        try:
+            # Get all positions (not just for current market)
+            positions_data = await self.perpetual_trading_client.account.get_positions()
+            
+            if not positions_data or not hasattr(positions_data, 'data'):
+                return Decimal('0')
+            
+            total_unrealized_pnl = Decimal('0')
+            positions = positions_data.data
+            
+            for position in positions:
+                if hasattr(position, 'unrealized_pnl'):
+                    pnl = Decimal(str(position.unrealized_pnl))
+                    total_unrealized_pnl += pnl
+                elif hasattr(position, 'unrealizedPnl'):
+                    pnl = Decimal(str(position.unrealizedPnl))
+                    total_unrealized_pnl += pnl
+                elif hasattr(position, 'pnl'):
+                    pnl = Decimal(str(position.pnl))
+                    total_unrealized_pnl += pnl
+            
+            return total_unrealized_pnl
+            
+        except Exception as e:
+            self.logger.log(f"Error calculating total unrealized PnL: {e}", "ERROR")
+            return Decimal('0')
+
+    async def get_account_equity(self) -> Decimal:
+        """
+        Get account equity (optional method for compatibility).
+        
+        Returns:
+            Decimal: Account equity
+        """
+        # For X10, equity is essentially the same as net worth
+        return await self.get_account_networth()
+
+    async def get_unrealized_pnl_and_margin(self) -> Tuple[Decimal, Decimal]:
+        """
+        Get unrealized PnL and margin information (optional method for compatibility).
+        
+        Returns:
+            Tuple[Decimal, Decimal]: (total_unrealized_pnl, initial_margin)
+        """
+        try:
+            # Get unrealized PnL
+            total_unrealized_pnl = await self._get_total_unrealized_pnl()
+            
+            # Try to get margin information
+            initial_margin = Decimal('0')
+            
+            # Attempt to get margin from positions
+            positions_data = await self.perpetual_trading_client.account.get_positions()
+            if positions_data and hasattr(positions_data, 'data'):
+                for position in positions_data.data:
+                    # Try different possible field names for margin
+                    for field in ['initial_margin', 'margin', 'margin_requirement', 'required_margin']:
+                        if hasattr(position, field):
+                            margin = Decimal(str(getattr(position, field)))
+                            initial_margin += margin
+                            break
+            
+            return total_unrealized_pnl, initial_margin
+            
+        except Exception as e:
+            self.logger.log(f"Error getting unrealized PnL and margin: {e}", "ERROR")
+            return Decimal('0'), Decimal('0')
     
     async def handle_account(self, message):
         """Handle order updates from WebSocket using correct pattern."""

@@ -27,16 +27,19 @@ show_usage() {
     echo -e "${YELLOW}选项:${NC}"
     echo -e "  ${GREEN}--paradex${NC}     仅检查 Paradex 交易机器人状态"
     echo -e "  ${GREEN}--grvt${NC}        仅检查 GRVT 交易机器人状态"
+    echo -e "  ${GREEN}--extended${NC}    仅检查 Extended (X10) 交易机器人状态"
     echo -e "  ${GREEN}--help${NC}        显示此帮助信息"
     echo ""
     echo -e "${YELLOW}示例:${NC}"
     echo -e "  ${CYAN}$0${NC}            检查所有交易机器人"
     echo -e "  ${CYAN}$0 --paradex${NC}  仅检查 Paradex"
     echo -e "  ${CYAN}$0 --grvt${NC}     仅检查 GRVT"
+    echo -e "  ${CYAN}$0 --extended${NC} 仅检查 Extended"
     echo ""
     echo -e "${YELLOW}独立检查脚本:${NC}"
     echo -e "  ${CYAN}./scripts/check_paradex.sh${NC}  专门检查 Paradex"
     echo -e "  ${CYAN}./scripts/check_grvt.sh${NC}     专门检查 GRVT"
+    echo -e "  ${CYAN}./scripts/check_extended.sh${NC} 专门检查 Extended"
 }
 
 # 处理命令行参数
@@ -59,6 +62,17 @@ case "$1" in
             ./scripts/check_grvt.sh
         else
             echo -e "${RED}错误: check_grvt.sh 脚本不存在${NC}"
+            exit 1
+        fi
+        exit 0
+        ;;
+    --extended)
+        echo -e "${BOLD}${GREEN}=== 调用独立 Extended 检查脚本 ===${NC}"
+        if [ -f "./scripts/check_extended.sh" ]; then
+            chmod +x ./scripts/check_extended.sh
+            ./scripts/check_extended.sh
+        else
+            echo -e "${RED}错误: check_extended.sh 脚本不存在${NC}"
             exit 1
         fi
         exit 0
@@ -188,6 +202,7 @@ if [ -f ".env" ]; then
     # 检查关键配置项（不显示具体值）
     paradex_configs=$(grep -c "PARADEX_" .env 2>/dev/null || echo "0")
     grvt_configs=$(grep -c "GRVT_" .env 2>/dev/null || echo "0")
+    extended_configs=$(grep -c "EXTENDED_" .env 2>/dev/null || echo "0")
     
     if [ -n "$paradex_configs" ] && [ "$paradex_configs" -gt 0 ]; then
         echo -e "${CYAN}   Paradex 配置项: $paradex_configs 个${NC}"
@@ -199,6 +214,12 @@ if [ -f ".env" ]; then
         echo -e "${CYAN}   GRVT 配置项: $grvt_configs 个${NC}"
     else
         log_issue "warning" "缺少 GRVT 配置"
+    fi
+    
+    if [ -n "$extended_configs" ] && [ "$extended_configs" -gt 0 ]; then
+        echo -e "${CYAN}   Extended 配置项: $extended_configs 个${NC}"
+    else
+        log_issue "warning" "缺少 Extended 配置"
     fi
     
     # 检查配置文件权限
@@ -262,6 +283,7 @@ check_pid_file() {
 
 check_pid_file "Paradex" ".paradex_pid"
 check_pid_file "GRVT" ".grvt_pid"
+check_pid_file "Extended" ".extended_pid"
 
 # 检查日志文件
 echo -e "\n${BOLD}${GREEN}=== 日志文件状态 ===${NC}"
@@ -310,6 +332,7 @@ analyze_log_file() {
 
 analyze_log_file "paradex_output.log"
 analyze_log_file "grvt_output.log"
+analyze_log_file "extended_output.log"
 
 # 检查回撤监控状态
 echo -e "\n${BOLD}${GREEN}=== 回撤监控状态 ===${NC}"
@@ -392,10 +415,11 @@ analyze_drawdown_status() {
 
 analyze_drawdown_status "paradex_output.log"
 analyze_drawdown_status "grvt_output.log"
+analyze_drawdown_status "extended_output.log"
 
 # 显示最近的日志条目
 echo -e "\n${BOLD}${GREEN}=== 最近的日志条目 ===${NC}"
-for log_file in "paradex_output.log" "grvt_output.log"; do
+for log_file in "paradex_output.log" "grvt_output.log" "extended_output.log"; do
     if [ -f "$log_file" ]; then
         local exchange=$(echo "$log_file" | cut -d'_' -f1)
         echo -e "\n${PURPLE}📊 $exchange 最新日志 (最后 3 行):${NC}"
@@ -473,21 +497,26 @@ echo -e "${CYAN}=== 启动/停止操作 ===${NC}"
 echo -e "${YELLOW}启动所有机器人:${NC} ./scripts/start_bots.sh"
 echo -e "${YELLOW}启动 Paradex:${NC} ./scripts/start_paradex.sh"
 echo -e "${YELLOW}启动 GRVT:${NC} ./scripts/start_grvt.sh"
+echo -e "${YELLOW}启动 Extended:${NC} ./scripts/start_extended.sh"
 echo -e "${YELLOW}停止所有机器人:${NC} ./scripts/stop_bots.sh"
 echo -e "${YELLOW}停止 Paradex:${NC} ./scripts/stop_paradex.sh"
 echo -e "${YELLOW}停止 GRVT:${NC} ./scripts/stop_grvt.sh"
+echo -e "${YELLOW}停止 Extended:${NC} ./scripts/stop_extended.sh"
 echo ""
 echo -e "${CYAN}=== 状态检查操作 ===${NC}"
 echo -e "${YELLOW}检查所有机器人:${NC} ./scripts/check_bots.sh"
 echo -e "${YELLOW}检查 Paradex:${NC} ./scripts/check_paradex.sh"
 echo -e "${YELLOW}检查 GRVT:${NC} ./scripts/check_grvt.sh"
+echo -e "${YELLOW}检查 Extended:${NC} ./scripts/check_extended.sh"
 echo -e "${YELLOW}参数化检查 Paradex:${NC} ./scripts/check_bots.sh --paradex"
 echo -e "${YELLOW}参数化检查 GRVT:${NC} ./scripts/check_bots.sh --grvt"
+echo -e "${YELLOW}参数化检查 Extended:${NC} ./scripts/check_bots.sh --extended"
 echo ""
 echo -e "${CYAN}=== 日志监控操作 ===${NC}"
 echo -e "${YELLOW}实时监控 Paradex:${NC} tail -f paradex_output.log"
 echo -e "${YELLOW}实时监控 GRVT:${NC} tail -f grvt_output.log"
-echo -e "${YELLOW}同时监控两个日志:${NC} tail -f paradex_output.log grvt_output.log"
+echo -e "${YELLOW}实时监控 Extended:${NC} tail -f extended_output.log"
+echo -e "${YELLOW}同时监控所有日志:${NC} tail -f paradex_output.log grvt_output.log extended_output.log"
 echo -e "${YELLOW}查看错误日志:${NC} grep -i error *.log | tail -10"
 echo -e "${YELLOW}清理过期PID文件:${NC} rm -f .*.pid"
 

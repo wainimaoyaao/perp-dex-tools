@@ -27,12 +27,14 @@ show_usage() {
     echo -e "${YELLOW}  无参数          停止所有交易机器人${NC}"
     echo -e "${YELLOW}  --paradex       仅停止 Paradex 机器人${NC}"
     echo -e "${YELLOW}  --grvt          仅停止 GRVT 机器人${NC}"
+    echo -e "${YELLOW}  --extended      仅停止 Extended (X10) 机器人${NC}"
     echo -e "${YELLOW}  --help, -h      显示此帮助信息${NC}"
     echo ""
     echo -e "${CYAN}示例:${NC}"
     echo -e "${CYAN}  $0              # 停止所有机器人${NC}"
     echo -e "${CYAN}  $0 --paradex    # 仅停止 Paradex 机器人${NC}"
     echo -e "${CYAN}  $0 --grvt       # 仅停止 GRVT 机器人${NC}"
+    echo -e "${CYAN}  $0 --extended   # 仅停止 Extended 机器人${NC}"
     echo ""
 }
 
@@ -53,6 +55,15 @@ case "$1" in
             exec ./scripts/stop_grvt.sh
         else
             echo -e "${RED}错误: stop_grvt.sh 脚本不存在${NC}"
+            exit 1
+        fi
+        ;;
+    --extended)
+        echo -e "${CYAN}调用独立的 Extended 停止脚本...${NC}"
+        if [ -f "./scripts/stop_extended.sh" ]; then
+            exec ./scripts/stop_extended.sh
+        else
+            echo -e "${RED}错误: stop_extended.sh 脚本不存在${NC}"
             exit 1
         fi
         ;;
@@ -316,6 +327,17 @@ else
     log_action "INFO" "未发现有效的 GRVT PID 文件"
 fi
 
+# 从PID文件停止Extended机器人
+if cleanup_pid_file ".extended_pid" "Extended 机器人"; then
+    EXTENDED_PID=$(cat .extended_pid)
+    if graceful_stop "$EXTENDED_PID" "Extended 机器人" "extended_output.log"; then
+        rm -f .extended_pid
+        log_action "SUCCESS" "已清理 .extended_pid 文件"
+    fi
+else
+    log_action "INFO" "未发现有效的 Extended PID 文件"
+fi
+
 echo -e "\n${BLUE}${BOLD}=== 第二阶段：查找并停止所有 runbot.py 进程 ===${NC}"
 
 # 查找所有运行中的 runbot.py 进程
@@ -452,8 +474,10 @@ echo -e "${CYAN}• 检查机器人状态: ${NC}./scripts/check_bots.sh"
 echo -e "${CYAN}• 启动所有机器人: ${NC}./scripts/start_bots.sh"
 echo -e "${CYAN}• 启动 Paradex: ${NC}./scripts/start_paradex.sh"
 echo -e "${CYAN}• 启动 GRVT: ${NC}./scripts/start_grvt.sh"
+echo -e "${CYAN}• 启动 Extended: ${NC}./scripts/start_extended.sh"
 echo -e "${CYAN}• 停止 Paradex: ${NC}./scripts/stop_paradex.sh"
 echo -e "${CYAN}• 停止 GRVT: ${NC}./scripts/stop_grvt.sh"
+echo -e "${CYAN}• 停止 Extended: ${NC}./scripts/stop_extended.sh"
 echo -e "${CYAN}• 查看实时日志: ${NC}tail -f paradex_output.log"
 echo -e "${CYAN}• 查看错误日志: ${NC}grep -i error *.log | tail -10"
 echo -e "${CYAN}• 清理所有日志: ${NC}rm -f *.log"

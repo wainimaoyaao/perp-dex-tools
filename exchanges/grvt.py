@@ -51,6 +51,10 @@ class GrvtClient(BaseExchangeClient):
         self._order_update_handler = None
         self._ws_client = None
         self._order_update_callback = None
+        
+        # Partial fill tracking
+        self.partially_filled_size = 0
+        self.partially_filled_avg_price = 0
 
     def _initialize_grvt_clients(self) -> None:
         """Initialize the GRVT REST and WebSocket clients."""
@@ -353,6 +357,26 @@ class GrvtClient(BaseExchangeClient):
 
     async def place_close_order(self, contract_id: str, quantity: Decimal, price: Decimal, side: str) -> OrderResult:
         """Place a close order with GRVT."""
+        # Store original values for potential rollback
+        original_partially_filled_size = self.partially_filled_size
+        original_partially_filled_avg_price = self.partially_filled_avg_price
+        
+        # Merge with partially filled orders if any exist
+        if self.partially_filled_size > 0:
+            # Calculate weighted average price
+            total_size = quantity + self.partially_filled_size
+            merged_price = (
+                (price * quantity + self.partially_filled_avg_price * self.partially_filled_size) / total_size
+            )
+            
+            # Use merged values
+            quantity = total_size
+            price = merged_price
+            
+            self.logger.log(f"[CLOSE] Merging with partially filled order: "
+                          f"size={self.partially_filled_size}, avg_price={self.partially_filled_avg_price}, "
+                          f"new_total_size={quantity}, new_avg_price={price}", "INFO")
+        
         # Get current market prices
         attempt = 0
         active_close_orders = await self._get_active_close_orders(contract_id)
@@ -385,14 +409,26 @@ class GrvtClient(BaseExchangeClient):
                 order_info = await self.place_post_only_order(contract_id, quantity, adjusted_price, side)
             except Exception as e:
                 self.logger.log(f"[CLOSE] Error placing order: {e}", "ERROR")
+                # Rollback partial fill state on error
+                self.partially_filled_size = original_partially_filled_size
+                self.partially_filled_avg_price = original_partially_filled_avg_price
                 continue
 
             order_status = order_info.status
             order_id = order_info.order_id
 
             if order_status == 'REJECTED':
+                # Rollback partial fill state on rejection
+                self.partially_filled_size = original_partially_filled_size
+                self.partially_filled_avg_price = original_partially_filled_avg_price
                 continue
             if order_status in ['OPEN', 'FILLED']:
+                # Reset partial fill tracking on successful order placement
+                if self.partially_filled_size > 0:
+                    self.partially_filled_size = 0
+                    self.partially_filled_avg_price = 0
+                    self.logger.log(f"[CLOSE] Reset partial fill tracking after successful order placement", "INFO")
+                
                 return OrderResult(
                     success=True,
                     order_id=order_id,
@@ -402,8 +438,14 @@ class GrvtClient(BaseExchangeClient):
                     status=order_status
                 )
             elif order_status == 'PENDING':
+                # Rollback partial fill state on pending timeout
+                self.partially_filled_size = original_partially_filled_size
+                self.partially_filled_avg_price = original_partially_filled_avg_price
                 raise Exception("[CLOSE] Order not processed after 10 seconds")
             else:
+                # Rollback partial fill state on unexpected status
+                self.partially_filled_size = original_partially_filled_size
+                self.partially_filled_avg_price = original_partially_filled_avg_price
                 raise Exception(f"[CLOSE] Unexpected order status: {order_status}")
 
     async def cancel_order(self, order_id: str) -> OrderResult:
