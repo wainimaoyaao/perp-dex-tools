@@ -122,6 +122,15 @@ class DrawdownMonitor:
         self.stop_loss_triggered = False
         self.stop_loss_executed = False
         
+        # 缓存相关状态
+        self.last_successful_networth: Optional[Decimal] = None
+        self.last_successful_update_time: float = 0
+        self.consecutive_failures: int = 0
+        self.max_consecutive_failures: int = 5  # 最大连续失败次数
+        self.cache_timeout_minutes: int = 30  # 缓存超时时间（分钟）
+        self.use_cached_value: bool = False  # 是否正在使用缓存值
+        self.strict_threshold_multiplier: Decimal = Decimal("0.8")  # 缓存模式下的严格阈值倍数
+        
         # 平滑处理
         self.networth_history = []
         
@@ -162,11 +171,76 @@ class DrawdownMonitor:
         self.stop_loss_triggered = False
         self.networth_history = [initial_networth]
         
+        # 初始化缓存状态
+        self.last_successful_networth = initial_networth
+        self.last_successful_update_time = time.time()
+        self.consecutive_failures = 0
+        self.use_cached_value = False
+        
         self.logger.log(f"Trading session started with initial net worth: ${initial_networth}", "INFO")
         self.logger.log(f"Drawdown thresholds - Light: {self.config.light_warning_threshold*100}%, "
                        f"Medium: {self.config.medium_warning_threshold*100}%, "
                        f"Severe: {self.config.severe_stop_loss_threshold*100}%", "INFO")
     
+    def update_networth_with_fallback(self, current_networth: Optional[Decimal] = None) -> bool:
+        """
+        更新净值，支持失败时使用缓存值
+        
+        Args:
+            current_networth: 当前净值，如果为None表示获取失败
+            
+        Returns:
+            bool: 是否应该继续交易（False表示触发止损）
+        """
+        if current_networth is not None:
+            # 净值获取成功，使用正常逻辑
+            return self._update_networth_success(current_networth)
+        else:
+            # 净值获取失败，使用缓存逻辑
+            return self._update_networth_failure()
+    
+    def _update_networth_success(self, current_networth: Decimal) -> bool:
+        """处理净值获取成功的情况"""
+        # 重置失败计数
+        self.consecutive_failures = 0
+        self.use_cached_value = False
+        
+        # 更新缓存
+        self.last_successful_networth = current_networth
+        self.last_successful_update_time = time.time()
+        
+        # 使用原有的更新逻辑
+        return self.update_networth(current_networth)
+    
+    def _update_networth_failure(self) -> bool:
+        """处理净值获取失败的情况"""
+        self.consecutive_failures += 1
+        current_time = time.time()
+        
+        self.logger.log(f"Net worth fetch failed (attempt {self.consecutive_failures}/{self.max_consecutive_failures})", "WARNING")
+        
+        # 检查是否超过最大失败次数
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            self.logger.log(f"Exceeded maximum consecutive failures ({self.max_consecutive_failures}), using cached value", "ERROR")
+        
+        # 检查缓存是否过期
+        cache_age_minutes = (current_time - self.last_successful_update_time) / 60
+        if cache_age_minutes > self.cache_timeout_minutes:
+            self.logger.log(f"Cached net worth is too old ({cache_age_minutes:.1f} minutes > {self.cache_timeout_minutes} minutes)", "ERROR")
+            # 即使缓存过期，也继续使用，但记录警告
+        
+        # 使用缓存值进行监控
+        if self.last_successful_networth is not None:
+            self.use_cached_value = True
+            self.logger.log(f"Using cached net worth: ${self.last_successful_networth} (age: {cache_age_minutes:.1f} minutes)", "INFO")
+            
+            # 使用缓存值更新监控状态
+            return self.update_networth(self.last_successful_networth)
+        else:
+            self.logger.log("No cached net worth available, cannot perform drawdown monitoring", "ERROR")
+            # 没有缓存值时，保持当前状态不变，继续交易但记录错误
+            return True
+
     def update_networth(self, current_networth: Decimal) -> bool:
         """
         更新当前净值并检查回撤
@@ -332,14 +406,33 @@ class DrawdownMonitor:
         # 对于严重止损，使用原始回撤率（如果提供）以获得更敏感的检测
         severe_check_rate = raw_drawdown_rate if raw_drawdown_rate is not None else drawdown_rate
         
-        if severe_check_rate >= self.config.severe_stop_loss_threshold:
-            return DrawdownLevel.SEVERE_STOP_LOSS
-        elif drawdown_rate >= self.config.medium_warning_threshold:
-            return DrawdownLevel.MEDIUM_WARNING
-        elif drawdown_rate >= self.config.light_warning_threshold:
-            return DrawdownLevel.LIGHT_WARNING
+        # 在缓存模式下使用更严格的阈值
+        if self.use_cached_value:
+            strict_severe_threshold = self.config.severe_stop_loss_threshold * self.strict_threshold_multiplier
+            strict_medium_threshold = self.config.medium_warning_threshold * self.strict_threshold_multiplier
+            strict_light_threshold = self.config.light_warning_threshold * self.strict_threshold_multiplier
+            
+            self.logger.log(f"Using strict thresholds (cached mode): severe={strict_severe_threshold*100:.2f}%, "
+                           f"medium={strict_medium_threshold*100:.2f}%, light={strict_light_threshold*100:.2f}%", "DEBUG")
+            
+            if severe_check_rate >= strict_severe_threshold:
+                return DrawdownLevel.SEVERE_STOP_LOSS
+            elif drawdown_rate >= strict_medium_threshold:
+                return DrawdownLevel.MEDIUM_WARNING
+            elif drawdown_rate >= strict_light_threshold:
+                return DrawdownLevel.LIGHT_WARNING
+            else:
+                return DrawdownLevel.NORMAL
         else:
-            return DrawdownLevel.NORMAL
+            # 正常模式下使用标准阈值
+            if severe_check_rate >= self.config.severe_stop_loss_threshold:
+                return DrawdownLevel.SEVERE_STOP_LOSS
+            elif drawdown_rate >= self.config.medium_warning_threshold:
+                return DrawdownLevel.MEDIUM_WARNING
+            elif drawdown_rate >= self.config.light_warning_threshold:
+                return DrawdownLevel.LIGHT_WARNING
+            else:
+                return DrawdownLevel.NORMAL
     
     def _handle_level_change(self, old_level: DrawdownLevel, new_level: DrawdownLevel, drawdown_rate: Decimal):
         """处理回撤级别变化"""
@@ -1113,7 +1206,12 @@ class DrawdownMonitor:
         
         drawdown_rate = self._calculate_drawdown_rate()
         
-        return {
+        # 计算缓存状态
+        cache_age_minutes = 0
+        if self.last_successful_update_time:
+            cache_age_minutes = (time.time() - self.last_successful_update_time) / 60
+        
+        status = {
             "monitoring": True,
             "stop_loss_triggered": self.stop_loss_triggered,
             "initial_networth": float(self.initial_networth) if self.initial_networth else None,
@@ -1126,8 +1224,24 @@ class DrawdownMonitor:
                 "light_warning": float(self.config.light_warning_threshold * 100),
                 "medium_warning": float(self.config.medium_warning_threshold * 100),
                 "severe_stop_loss": float(self.config.severe_stop_loss_threshold * 100)
+            },
+            "cache_status": {
+                "using_cached_value": self.use_cached_value,
+                "consecutive_failures": self.consecutive_failures,
+                "cache_age_minutes": round(cache_age_minutes, 2),
+                "cache_timeout_minutes": self.cache_timeout_minutes,
+                "last_successful_networth": float(self.last_successful_networth) if self.last_successful_networth else None
             }
         }
+        
+        # 如果使用缓存值，添加严格阈值信息
+        if self.use_cached_value:
+            status["thresholds"]["strict_multiplier"] = float(self.strict_threshold_multiplier)
+            status["thresholds"]["effective_severe_stop_loss"] = float(
+                self.config.severe_stop_loss_threshold * self.strict_threshold_multiplier * 100
+            )
+        
+        return status
     
     def stop_monitoring(self):
         """停止监控"""

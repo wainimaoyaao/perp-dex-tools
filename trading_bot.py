@@ -98,22 +98,27 @@ class TradingBot:
         # Initialize drawdown monitor if enabled
         self.drawdown_monitor = None
         if config.enable_drawdown_monitor:
-            drawdown_config = DrawdownConfig(
-                light_warning_threshold=config.drawdown_light_threshold / 100,
-                medium_warning_threshold=config.drawdown_medium_threshold / 100,
-                severe_stop_loss_threshold=config.drawdown_severe_threshold / 100
-            )
-            # 传递exchange_client和contract_id以启用自动止损功能
-            self.drawdown_monitor = DrawdownMonitor(
-                drawdown_config, 
-                self.logger, 
-                self.exchange_client, 
-                config.contract_id
-            )
-            self.logger.log(f"Drawdown monitor enabled with automatic stop-loss. Thresholds: "
-                          f"Light={config.drawdown_light_threshold}%, "
-                          f"Medium={config.drawdown_medium_threshold}%, "
-                          f"Severe={config.drawdown_severe_threshold}%", "INFO")
+            try:
+                drawdown_config = DrawdownConfig(
+                    light_warning_threshold=config.drawdown_light_threshold / 100,
+                    medium_warning_threshold=config.drawdown_medium_threshold / 100,
+                    severe_stop_loss_threshold=config.drawdown_severe_threshold / 100
+                )
+                # 传递exchange_client和contract_id以启用自动止损功能
+                self.drawdown_monitor = DrawdownMonitor(
+                    drawdown_config, 
+                    self.logger, 
+                    self.exchange_client, 
+                    config.contract_id
+                )
+                self.logger.log(f"Drawdown monitor enabled with automatic stop-loss. Thresholds: "
+                              f"Light={config.drawdown_light_threshold}%, "
+                              f"Medium={config.drawdown_medium_threshold}%, "
+                              f"Severe={config.drawdown_severe_threshold}%", "INFO")
+            except Exception as e:
+                self.logger.log(f"Failed to create drawdown monitor: {e}", "ERROR")
+                # 即使创建失败，也设置为 None，避免后续检查问题
+                self.drawdown_monitor = None
 
         # Register order callback
         self._setup_websocket_handlers()
@@ -568,8 +573,14 @@ class TradingBot:
                     self.drawdown_monitor.start_session(initial_networth)
                     self.logger.log(f"Drawdown monitor session started with initial net worth: {initial_networth}", "INFO")
                 except Exception as e:
-                    self.logger.log(f"Failed to initialize drawdown monitor: {e}", "ERROR")
-                    self.drawdown_monitor = None  # Disable if initialization fails
+                    self.logger.log(f"Failed to get initial net worth for drawdown monitor: {e}", "WARNING")
+                    # 即使获取初始净值失败，也启动会话，使用默认值 0
+                    try:
+                        self.drawdown_monitor.start_session(Decimal("0"))
+                        self.logger.log("Drawdown monitor session started with default net worth (0) due to initial fetch failure", "WARNING")
+                    except Exception as session_error:
+                        self.logger.log(f"Failed to start drawdown monitor session: {session_error}", "ERROR")
+                        self.drawdown_monitor = None  # 只有在会话启动完全失败时才禁用
 
             # Main trading loop
             while not self.shutdown_requested:
@@ -578,7 +589,11 @@ class TradingBot:
                 if self.drawdown_monitor:
                     try:
                         current_networth = await self.exchange_client.get_account_networth()
-                        should_continue = self.drawdown_monitor.update_networth(current_networth)
+                        should_continue = self.drawdown_monitor.update_networth_with_fallback(current_networth)
+                    except Exception as networth_error:
+                        self.logger.log(f"Failed to get current net worth: {networth_error}", "WARNING")
+                        # 使用缓存值进行更新
+                        should_continue = self.drawdown_monitor.update_networth_with_fallback(None)
                         
                         # Check if stop loss was triggered
                         if not should_continue or self.drawdown_monitor.is_stop_loss_triggered():
@@ -779,6 +794,15 @@ class TradingBot:
                                 
                     except Exception as e:
                         self.logger.log(f"Error in drawdown monitoring: {e}", "ERROR")
+                        # 即使出现错误，也尝试使用缓存值继续监控
+                        try:
+                            should_continue = self.drawdown_monitor.update_networth_with_fallback(None)
+                            if not should_continue or self.drawdown_monitor.is_stop_loss_triggered():
+                                self.logger.log("Stop-loss triggered during error recovery mode", "CRITICAL")
+                                await self.graceful_shutdown("Drawdown stop-loss triggered during error recovery")
+                                break
+                        except Exception as fallback_error:
+                            self.logger.log(f"Failed to use fallback monitoring: {fallback_error}", "ERROR")
                 
                 # Note: Stop-loss execution is now handled in the severe drawdown check above
                 # to ensure it executes before script shutdown
