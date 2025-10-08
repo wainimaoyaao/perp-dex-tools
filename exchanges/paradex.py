@@ -187,19 +187,20 @@ class ParadexClient(BaseExchangeClient):
             raise ValueError("L2 private key is required for trading operations")
 
     async def connect(self) -> None:
-        """Connect to Paradex WebSocket."""
-        is_connected = False
-        while not is_connected:
-            is_connected = await self.paradex.ws_client.connect()
-            if not is_connected:
-                self.logger.log("Connection failed, retrying in 1 second...", "WARN")
-                await asyncio.sleep(1)
-        # Wait a moment for connection to establish
-        await asyncio.sleep(2)
-        self._ws_connected = True
+        """Connect to Paradex WebSocket with robust error handling."""
+        try:
+            # Use the new robust connection method
+            await self._ensure_websocket_connection()
+            
+            # Wait a moment for connection to establish
+            await asyncio.sleep(2)
 
-        # Setup WebSocket subscription for order updates if handler is set
-        await self._setup_websocket_subscription()
+            # Setup WebSocket subscription for order updates if handler is set
+            await self._setup_websocket_subscription()
+            
+        except Exception as e:
+            self.logger.log(f"Failed to establish initial connection: {e}", "ERROR")
+            raise
 
     async def disconnect(self) -> None:
         """Disconnect from Paradex."""
@@ -274,20 +275,12 @@ class ParadexClient(BaseExchangeClient):
         self._ws_order_update_handler = order_update_handler
 
     async def _setup_websocket_subscription(self) -> None:
-        """Setup WebSocket subscription for order updates."""
+        """Setup WebSocket subscription for order updates with reconnection logic."""
         if not hasattr(self, '_ws_order_update_handler'):
             return
 
         # Ensure WebSocket is connected
-        if not hasattr(self, '_ws_connected') or not self._ws_connected:
-            is_connected = False
-            while not is_connected:
-                is_connected = await self.paradex.ws_client.connect()
-                if not is_connected:
-                    self.logger.log("WebSocket connection failed, retrying in 1 second...", "WARN")
-                    await asyncio.sleep(1)
-            self._ws_connected = True
-            self.logger.log("WebSocket connected for order monitoring", "INFO")
+        await self._ensure_websocket_connection()
 
         # Subscribe to orders channel for the specific market
         from paradex_py.api.ws_client import ParadexWebsocketChannel
@@ -302,6 +295,86 @@ class ParadexClient(BaseExchangeClient):
             self.logger.log(f"Subscribed to order updates for {contract_id}", "INFO")
         except Exception as e:
             self.logger.log(f"Failed to subscribe to order updates: {e}", "ERROR")
+            # Reset connection state to trigger reconnection on next attempt
+            self._ws_connected = False
+
+    async def _ensure_websocket_connection(self) -> None:
+        """Ensure WebSocket connection is active, reconnect if necessary."""
+        max_retries = 5
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Check if we need to establish connection
+                if not hasattr(self, '_ws_connected') or not self._ws_connected:
+                    self.logger.log("Establishing WebSocket connection...", "INFO")
+                    is_connected = await self.paradex.ws_client.connect()
+                    if is_connected:
+                        self._ws_connected = True
+                        self.logger.log("WebSocket connected successfully", "INFO")
+                        return
+                    else:
+                        raise Exception("Failed to establish WebSocket connection")
+                
+                # Test if existing connection is still alive
+                if hasattr(self.paradex.ws_client, 'ws') and self.paradex.ws_client.ws:
+                    # Check if WebSocket is still open
+                    if self.paradex.ws_client.ws.closed:
+                        self.logger.log("WebSocket connection is closed, reconnecting...", "WARN")
+                        self._ws_connected = False
+                        continue
+                    else:
+                        # Connection appears to be active
+                        return
+                else:
+                    # No WebSocket object, need to reconnect
+                    self._ws_connected = False
+                    continue
+                    
+            except Exception as e:
+                retry_count += 1
+                self._ws_connected = False
+                self.logger.log(f"WebSocket connection attempt {retry_count} failed: {e}", "WARN")
+                
+                if retry_count < max_retries:
+                    wait_time = min(2 ** retry_count, 30)  # Exponential backoff, max 30 seconds
+                    self.logger.log(f"Retrying WebSocket connection in {wait_time} seconds...", "INFO")
+                    await asyncio.sleep(wait_time)
+                else:
+                    self.logger.log("Max WebSocket connection retries exceeded", "ERROR")
+                    raise Exception("Failed to establish WebSocket connection after multiple attempts")
+
+    async def _handle_websocket_error(self, error: Exception) -> None:
+        """Handle WebSocket errors and attempt reconnection."""
+        self.logger.log(f"WebSocket error detected: {error}", "WARN")
+        self._ws_connected = False
+        
+        # Attempt to reconnect
+        try:
+            await self._ensure_websocket_connection()
+            # Re-subscribe if reconnection was successful
+            if self._ws_connected:
+                await self._setup_websocket_subscription()
+        except Exception as reconnect_error:
+            self.logger.log(f"Failed to reconnect WebSocket: {reconnect_error}", "ERROR")
+
+    async def _check_websocket_health(self) -> None:
+        """Periodically check WebSocket health and reconnect if needed."""
+        try:
+            # Only check if we have a WebSocket handler set up
+            if hasattr(self, '_ws_order_update_handler'):
+                # Check if connection is still alive
+                if hasattr(self, '_ws_connected') and self._ws_connected:
+                    if hasattr(self.paradex.ws_client, 'ws') and self.paradex.ws_client.ws:
+                        if self.paradex.ws_client.ws.closed:
+                            self.logger.log("WebSocket connection lost, attempting reconnection...", "WARN")
+                            await self._handle_websocket_error(Exception("WebSocket connection closed"))
+                    else:
+                        # No WebSocket object, connection is lost
+                        self.logger.log("WebSocket object missing, attempting reconnection...", "WARN")
+                        await self._handle_websocket_error(Exception("WebSocket object missing"))
+        except Exception as e:
+            self.logger.log(f"Error during WebSocket health check: {e}", "WARN")
 
     @retry(
         stop=stop_after_attempt(5),
@@ -311,6 +384,9 @@ class ParadexClient(BaseExchangeClient):
     )
     async def fetch_bbo_prices(self, contract_id: str) -> Dict[str, Any]:
         """Get orderbook using official SDK."""
+        # Check WebSocket health periodically
+        await self._check_websocket_health()
+        
         orderbook_data = self.paradex.api_client.fetch_orderbook(contract_id, {"depth": 1})
         if not orderbook_data:
             self.logger.log("Failed to get orderbook", "ERROR")
