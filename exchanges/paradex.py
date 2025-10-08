@@ -13,29 +13,75 @@ from helpers.logger import TradingLogger
 
 
 def patch_paradex_http_client():
-    """Patch Paradex SDK HttpClient to suppress unwanted print statements."""
+    """Patch Paradex SDK HttpClient to suppress unwanted print statements and improve error handling."""
     try:
         from paradex_py.api.http_client import HttpClient
+        import json
 
         def patched_request(self, url, http_method, params=None, payload=None, headers=None):
-            res = self.client.request(
-                method=http_method.value,
-                url=url,
-                params=params,
-                json=payload,
-                headers=headers,
-            )
-            if res.status_code >= 300:
-                from paradex_py.api.models import ApiErrorSchema
-                error = ApiErrorSchema().loads(res.text)
-                raise Exception(error)
             try:
-                return res.json()
-            except ValueError:
-                # Suppress the "No response request" print statement
-                # This is expected for DELETE requests that don't return JSON
-                # The original code would print: f"HttpClient: No response request({url}, {http_method.value})"
-                pass
+                res = self.client.request(
+                    method=http_method.value,
+                    url=url,
+                    params=params,
+                    json=payload,
+                    headers=headers,
+                )
+                
+                # Enhanced error handling for HTTP status codes
+                if res.status_code >= 300:
+                    error_details = {
+                        'status_code': res.status_code,
+                        'url': url,
+                        'method': http_method.value,
+                        'response_text': res.text[:500] if res.text else 'No response text'  # Limit text length
+                    }
+                    
+                    try:
+                        from paradex_py.api.models import ApiErrorSchema
+                        error = ApiErrorSchema().loads(res.text)
+                        raise Exception(f"API Error: {error}. Details: {error_details}")
+                    except Exception:
+                        # If we can't parse the error response, provide raw details
+                        raise Exception(f"HTTP {res.status_code} Error. Details: {error_details}")
+                
+                # Enhanced JSON parsing with better error messages
+                try:
+                    if res.text.strip():  # Check if response has content
+                        return res.json()
+                    else:
+                        # Empty response - this might be expected for some endpoints
+                        if http_method.value.upper() in ['DELETE', 'POST']:
+                            return {}  # Return empty dict for DELETE/POST operations
+                        else:
+                            # For GET requests, empty response might indicate an issue
+                            raise ValueError(f"Empty response from {url} (GET request)")
+                            
+                except json.JSONDecodeError as json_error:
+                    # Provide detailed information about JSON parsing failures
+                    error_info = {
+                        'url': url,
+                        'method': http_method.value,
+                        'status_code': res.status_code,
+                        'response_text_preview': res.text[:200] if res.text else 'No content',
+                        'response_length': len(res.text) if res.text else 0,
+                        'json_error': str(json_error)
+                    }
+                    raise ValueError(f"JSON parsing failed: {json_error}. Request details: {error_info}")
+                    
+                except ValueError as value_error:
+                    # Re-raise ValueError with additional context
+                    raise ValueError(f"Response processing failed: {value_error}")
+                    
+            except Exception as request_error:
+                # Catch any other request-related errors
+                error_context = {
+                    'url': url,
+                    'method': http_method.value,
+                    'error_type': type(request_error).__name__,
+                    'error_message': str(request_error)
+                }
+                raise Exception(f"Request failed: {error_context}")
 
         # Replace the request method
         HttpClient.request = patched_request
@@ -689,36 +735,113 @@ class ParadexClient(BaseExchangeClient):
             Decimal: Account net worth for drawdown monitoring
         """
         try:
-            # 直接调用API而不使用带有reraise=True的方法，避免异常传播中断监控
-            account_summary = self.paradex.api_client.fetch_account_summary()
-            if account_summary:
-                equity = float(getattr(account_summary, 'account_value', 0))
-                self.logger.log(f"Account net worth: {equity}", "INFO")
-                return Decimal(str(equity))
-            else:
-                self.logger.log("Failed to get account summary, using fallback", "WARNING")
+            # Add detailed logging for debugging API issues
+            self.logger.log("Attempting to fetch account networth from Paradex API", "DEBUG")
+            
+            # Check if paradex client is properly initialized
+            if not hasattr(self, 'paradex') or not self.paradex:
+                self.logger.log("Paradex client not initialized", "ERROR")
                 return Decimal('0')
-        except AttributeError:
-            # 尝试备用方法名
+            
+            if not hasattr(self.paradex, 'api_client') or not self.paradex.api_client:
+                self.logger.log("Paradex API client not available", "ERROR")
+                return Decimal('0')
+            
+            # Try primary method with enhanced error handling
             try:
-                account_summary = self.paradex.api_client.get_account_summary()
+                self.logger.log("Calling fetch_account_summary()", "DEBUG")
+                account_summary = self.paradex.api_client.fetch_account_summary()
+                
                 if account_summary:
-                    equity = float(getattr(account_summary, 'account_value', 0))
-                    self.logger.log(f"Account net worth (fallback method): {equity}", "INFO")
-                    return Decimal(str(equity))
-            except AttributeError:
-                try:
-                    account_summary = self.paradex.api_client.fetch_account()
-                    if account_summary:
-                        equity = float(getattr(account_summary, 'account_value', 0))
-                        self.logger.log(f"Account net worth (second fallback): {equity}", "INFO")
+                    self.logger.log(f"Account summary response type: {type(account_summary)}", "DEBUG")
+                    self.logger.log(f"Account summary attributes: {dir(account_summary)}", "DEBUG")
+                    
+                    # Try different attribute names for account value
+                    equity = 0
+                    for attr_name in ['account_value', 'total_value', 'equity', 'net_worth', 'balance']:
+                        if hasattr(account_summary, attr_name):
+                            equity = float(getattr(account_summary, attr_name, 0))
+                            self.logger.log(f"Found account value using attribute '{attr_name}': {equity}", "INFO")
+                            break
+                    
+                    if equity > 0:
+                        self.logger.log(f"Account net worth: {equity}", "INFO")
                         return Decimal(str(equity))
-                except AttributeError:
-                    self.logger.log("No valid account summary method found", "ERROR")
-        except Exception as e:
-            self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
+                    else:
+                        self.logger.log("Account value is 0 or not found in response", "WARNING")
+                else:
+                    self.logger.log("Account summary response is None or empty", "WARNING")
+                    
+            except Exception as api_error:
+                # Log the specific API error details
+                self.logger.log(f"API call failed with error: {type(api_error).__name__}: {api_error}", "ERROR")
+                
+                # Check if it's a JSON parsing error
+                if "Expecting value" in str(api_error) or "JSON" in str(api_error):
+                    self.logger.log("JSON parsing error detected - API may be returning empty/invalid response", "ERROR")
+                    self.logger.log("This could indicate authentication issues or API unavailability", "ERROR")
+                
+                # Try alternative API methods
+                self.logger.log("Attempting fallback methods", "INFO")
+                
+        except AttributeError as attr_error:
+            self.logger.log(f"AttributeError in primary method: {attr_error}", "ERROR")
+            
+        # Try fallback methods with better error handling
+        fallback_methods = [
+            ('get_account_summary', 'get_account_summary()'),
+            ('fetch_account', 'fetch_account()'),
+            ('get_account', 'get_account()'),
+            ('account_summary', 'account_summary()'),
+        ]
         
-        # 如果所有方法都失败，返回0而不是抛出异常
+        for method_name, method_desc in fallback_methods:
+            try:
+                if hasattr(self.paradex.api_client, method_name):
+                    self.logger.log(f"Trying fallback method: {method_desc}", "DEBUG")
+                    method = getattr(self.paradex.api_client, method_name)
+                    account_summary = method()
+                    
+                    if account_summary:
+                        # Try different attribute names
+                        for attr_name in ['account_value', 'total_value', 'equity', 'net_worth', 'balance']:
+                            if hasattr(account_summary, attr_name):
+                                equity = float(getattr(account_summary, attr_name, 0))
+                                if equity > 0:
+                                    self.logger.log(f"Account net worth (via {method_desc}): {equity}", "INFO")
+                                    return Decimal(str(equity))
+                        
+                        self.logger.log(f"Fallback method {method_desc} returned data but no valid equity value found", "WARNING")
+                    else:
+                        self.logger.log(f"Fallback method {method_desc} returned None", "WARNING")
+                        
+            except Exception as fallback_error:
+                self.logger.log(f"Fallback method {method_desc} failed: {fallback_error}", "DEBUG")
+                continue
+        
+        # Final fallback - try to get balance information
+        try:
+            self.logger.log("Attempting to get account balance as final fallback", "DEBUG")
+            balance_info = await self.get_account_balance()
+            if balance_info and isinstance(balance_info, dict):
+                total_balance = balance_info.get('total_balance', 0)
+                if total_balance > 0:
+                    self.logger.log(f"Using account balance as networth: {total_balance}", "INFO")
+                    return Decimal(str(total_balance))
+        except Exception as balance_error:
+            self.logger.log(f"Failed to get account balance: {balance_error}", "DEBUG")
+        
+        # Log comprehensive failure information
+        self.logger.log("All methods to fetch account networth failed", "ERROR")
+        self.logger.log("Possible causes:", "ERROR")
+        self.logger.log("1. API authentication issues - check PARADEX_L1_ADDRESS and PARADEX_L2_PRIVATE_KEY", "ERROR")
+        self.logger.log("2. Network connectivity problems", "ERROR")
+        self.logger.log("3. Paradex API service unavailable", "ERROR")
+        self.logger.log("4. API rate limiting", "ERROR")
+        self.logger.log("5. Invalid API credentials or expired session", "ERROR")
+        
+        # Return 0 but log it clearly
+        self.logger.log("Returning 0 as fallback networth value", "WARNING")
         return Decimal('0')
 
     async def get_unrealized_pnl_and_margin(self) -> Tuple[Decimal, Decimal]:
