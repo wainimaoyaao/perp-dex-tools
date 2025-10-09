@@ -558,8 +558,10 @@ class LighterClient(BaseExchangeClient):
                 break
 
         if market_info is None:
-            self.logger.log("Failed to get markets", "ERROR")
-            raise ValueError("Failed to get markets")
+            available_tickers = [market.symbol for market in order_books.order_books]
+            self.logger.log(f"Ticker '{ticker}' not found on Lighter exchange", "ERROR")
+            self.logger.log(f"Available tickers: {', '.join(available_tickers)}", "ERROR")
+            raise ValueError(f"Ticker '{ticker}' not found on Lighter exchange. Available tickers: {', '.join(available_tickers)}")
 
         market_summary = await order_api.order_book_details(market_id=market_info.market_id)
         order_book_details = market_summary.order_book_details[0]

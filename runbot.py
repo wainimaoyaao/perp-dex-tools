@@ -8,6 +8,7 @@ import asyncio
 import logging
 from pathlib import Path
 import sys
+import traceback
 import dotenv
 from decimal import Decimal
 from trading_bot import TradingBot, TradingConfig
@@ -140,8 +141,9 @@ async def main():
         await bot.run()
     except Exception as e:
         print(f"Bot execution failed: {e}")
+        print(f"Error details: {traceback.format_exc()}")
         # The bot's run method already handles graceful shutdown
-        return
+        sys.exit(1)
 
 
 if __name__ == "__main__":
