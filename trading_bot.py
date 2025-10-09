@@ -623,12 +623,8 @@ class TradingBot:
                     try:
                         current_networth = await self.exchange_client.get_account_networth()
                         should_continue = self.drawdown_monitor.update_networth_with_fallback(current_networth)
-                    except Exception as networth_error:
-                        self.logger.log(f"Failed to get current net worth: {networth_error}", "WARNING")
-                        # 使用缓存值进行更新
-                        should_continue = self.drawdown_monitor.update_networth_with_fallback(None)
                         
-                        # Check if stop loss was triggered
+                        # Check if stop loss was triggered (moved from except block to try block)
                         if not should_continue or self.drawdown_monitor.is_stop_loss_triggered():
                             drawdown_percentage = self.drawdown_monitor.get_drawdown_percentage()
                             session_peak = self.drawdown_monitor.session_peak_networth
@@ -679,70 +675,42 @@ class TradingBot:
                                             except Exception as verify_e:
                                                 self.logger.log(f"Failed to verify final position: {verify_e}", "WARNING")
                                         else:
-                                            # 详细记录失败原因
-                                            failure_reason = "Unknown - stop_loss_executed flag not set"
-                                            
-                                            # 尝试获取更多失败信息
+                                            # 止损执行失败，记录详细信息
+                                            failure_reasons = []
                                             try:
                                                 # 检查是否有活跃订单
                                                 active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
                                                 if active_orders:
-                                                    failure_reason = f"Active orders still exist: {len(active_orders)} orders"
-                                                    for order in active_orders[:3]:  # 只记录前3个订单
-                                                        self.logger.log(f"Active order: {order.order_id} - {order.side} {order.size} @ {order.price}", "INFO")
+                                                    failure_reasons.append(f"Active orders exist: {len(active_orders)}")
                                                 
                                                 # 检查当前仓位
                                                 current_pos = await self.exchange_client.get_account_positions()
                                                 if abs(current_pos) > 0.001:
-                                                    failure_reason += f" | Position not closed: {current_pos}"
+                                                    failure_reasons.append(f"Position not closed: {current_pos}")
                                                 
-                                            except Exception as detail_e:
-                                                failure_reason += f" | Failed to get detailed info: {detail_e}"
+                                            except Exception as check_e:
+                                                failure_reasons.append(f"Failed to check status: {check_e}")
                                             
-                                            self.logger.log(f"Stop-loss execution attempt {retry_count} failed. Reason: {failure_reason}", "WARNING")
+                                            failure_msg = f"Stop-loss execution failed (attempt {retry_count})"
+                                            if failure_reasons:
+                                                failure_msg += f": {', '.join(failure_reasons)}"
+                                            self.logger.log(failure_msg, "WARNING")
                                             
-                                            # 动态调整等待时间
-                                            wait_time = min(10, 3 + retry_count // 5)  # 3-10秒，随重试次数增加
-                                            self.logger.log(f"Retrying in {wait_time} seconds...", "INFO")
-                                            
-                                            # 可中断的等待
-                                            for i in range(wait_time):
-                                                if self.shutdown_requested:
-                                                    self.logger.log("Stop-loss retry interrupted by user", "WARNING")
-                                                    break
-                                                await asyncio.sleep(1)
-                                            
-                                    except KeyboardInterrupt:
-                                        self.logger.log("Stop-loss execution interrupted by user (Ctrl+C)", "WARNING")
-                                        self.shutdown_requested = True
-                                        break
-                                    except Exception as e:
-                                        # 详细记录异常信息
-                                        error_details = f"Exception type: {type(e).__name__}, Message: {str(e)}"
-                                        if hasattr(e, 'response'):
-                                            error_details += f", Response: {getattr(e, 'response', 'N/A')}"
-                                        if hasattr(e, 'status_code'):
-                                            error_details += f", Status Code: {getattr(e, 'status_code', 'N/A')}"
-                                        
-                                        self.logger.log(f"Error executing stop-loss (attempt {retry_count}): {error_details}", "ERROR")
-                                        self.logger.log(f"Full traceback: {traceback.format_exc()}", "ERROR")
-                                        
-                                        # 可中断的等待
-                                        wait_time = min(10, 5 + retry_count // 10)
-                                        self.logger.log(f"Retrying stop-loss execution in {wait_time} seconds...", "INFO")
-                                        for i in range(wait_time):
-                                            if self.shutdown_requested:
-                                                self.logger.log("Stop-loss retry interrupted by user", "WARNING")
-                                                break
-                                            await asyncio.sleep(1)
+                                            # 动态等待时间，重试次数越多等待越久
+                                            wait_time = min(retry_count * 0.5, 5.0)  # 最多等待5秒
+                                            await asyncio.sleep(wait_time)
+                                    
+                                    except Exception as retry_e:
+                                        self.logger.log(f"Error during stop-loss retry {retry_count}: {retry_e}", "ERROR")
+                                        await asyncio.sleep(1)
                                 
-                                # 最终状态检查和报告
-                                if self.shutdown_requested:
-                                    interrupt_msg = f"🛑 Stop-loss execution interrupted by user after {retry_count} attempts"
-                                    interrupt_msg += f"\nManual intervention may be required to close positions"
-                                    interrupt_msg += f"\n用户中断了止损执行，可能需要手动平仓"
-                                    self.logger.log(interrupt_msg, "WARNING")
-                                    await self.send_notification(interrupt_msg)
+                                # 重试循环结束后的处理
+                                if not stop_loss_success:
+                                    max_retry_msg = f"🛑 Stop-loss execution interrupted by user after {retry_count} attempts"
+                                    max_retry_msg += f"\nManual intervention may be required to close positions"
+                                    max_retry_msg += f"\n用户中断了止损执行，可能需要手动平仓"
+                                    self.logger.log(max_retry_msg, "WARNING")
+                                    await self.send_notification(max_retry_msg)
                                 elif retry_count >= max_retries:
                                     max_retry_msg = f"🚨 CRITICAL: Stop-loss failed after {max_retries} attempts!"
                                     max_retry_msg += f"\nAutomatic stop-loss has been exhausted"
@@ -795,11 +763,14 @@ class TradingBot:
                                 
                                 self.logger.log(msg, "WARNING")
                                 await self.send_notification(msg)
+                                continue  # 立即跳出当前循环迭代，避免继续执行交易逻辑
                         
                         elif current_level.value == "light_warning":
                             # Resume trading if it was paused
+                            trading_resumed = False
                             if self.trading_paused:
                                 self.trading_paused = False
+                                trading_resumed = True
                                 self.logger.log("Trading resumed - drawdown level reduced to light warning", "INFO")
                             
                             drawdown_percentage = self.drawdown_monitor.get_drawdown_percentage()
@@ -818,18 +789,24 @@ class TradingBot:
                             
                             self.logger.log(msg, "WARNING")
                             await self.send_notification(msg)
+                            
+                            # 如果刚刚恢复交易，立即跳出循环以便快速响应
+                            if trading_resumed:
+                                continue
                         
                         else:
                             # No drawdown warning - resume trading if it was paused
                             if self.trading_paused:
                                 self.trading_paused = False
                                 self.logger.log("Trading resumed - drawdown level back to normal", "INFO")
+                                continue  # 立即跳出循环以便快速恢复交易
                                 
-                    except Exception as e:
-                        self.logger.log(f"Error in drawdown monitoring: {e}", "ERROR")
+                    except Exception as networth_error:
+                        self.logger.log(f"Failed to get current net worth: {networth_error}", "WARNING")
+                        # 使用缓存值进行更新
+                        should_continue = self.drawdown_monitor.update_networth_with_fallback(None)
                         # 即使出现错误，也尝试使用缓存值继续监控
                         try:
-                            should_continue = self.drawdown_monitor.update_networth_with_fallback(None)
                             if not should_continue or self.drawdown_monitor.is_stop_loss_triggered():
                                 self.logger.log("Stop-loss triggered during error recovery mode", "CRITICAL")
                                 await self.graceful_shutdown("Drawdown stop-loss triggered during error recovery")
