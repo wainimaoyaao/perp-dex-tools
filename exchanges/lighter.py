@@ -265,6 +265,19 @@ class LighterClient(BaseExchangeClient):
             if status in ['FILLED', 'CANCELED']:
                 self.logger.log_transaction(order_id, side, filled_size, price, status)
 
+            # Call the order update handler for trading_bot.py
+            if self._order_update_handler:
+                self._order_update_handler({
+                    'order_id': order_id,
+                    'side': side,
+                    'order_type': order_type,
+                    'status': status,
+                    'size': size,
+                    'price': price,
+                    'contract_id': self.config.contract_id,
+                    'filled_size': filled_size
+                })
+
     @query_retry(default_return=(0, 0))
     async def fetch_bbo_prices(self, contract_id: str) -> Tuple[Decimal, Decimal]:
         """Get orderbook using official SDK."""
@@ -405,6 +418,15 @@ class LighterClient(BaseExchangeClient):
             raise ValueError("Invalid bid/ask prices")
 
         order_price = (best_bid + best_ask) / 2
+
+        active_orders = await self.get_active_orders(self.config.contract_id)
+        close_orders = [order for order in active_orders if order.side == self.config.close_order_side]
+        for order in close_orders:
+            if side == 'buy':
+                order_price = min(order_price, order.price - self.config.tick_size)
+            else:
+                order_price = max(order_price, order.price + self.config.tick_size)
+
         return order_price
 
     async def cancel_order(self, order_id: str) -> OrderResult:
@@ -541,8 +563,8 @@ class LighterClient(BaseExchangeClient):
 
     async def get_contract_attributes(self) -> Tuple[str, Decimal]:
         """Get contract ID for a ticker."""
-        original_ticker = self.config.ticker
-        if len(original_ticker) == 0:
+        ticker = self.config.ticker
+        if len(ticker) == 0:
             self.logger.log("Ticker is empty", "ERROR")
             raise ValueError("Ticker is empty")
 
@@ -550,37 +572,16 @@ class LighterClient(BaseExchangeClient):
         # Get all order books to find the market for our ticker
         order_books = await order_api.order_books()
 
-        # Try multiple ticker formats to find a match
-        ticker_formats = [
-            original_ticker,                    # Original format (e.g., "HYPE")
-            f"{original_ticker}-USD",          # Add -USD suffix (e.g., "HYPE-USD")
-            f"{original_ticker}-USDC",         # Add -USDC suffix (e.g., "HYPE-USDC")
-            f"{original_ticker}/USD",          # Slash format (e.g., "HYPE/USD")
-            f"{original_ticker}/USDC",         # Slash format with USDC (e.g., "HYPE/USDC")
-        ]
-
-        # Find the market that matches any of our ticker formats
+        # Find the market that matches our ticker
         market_info = None
-        used_ticker = None
-        for ticker_format in ticker_formats:
-            for market in order_books.order_books:
-                if market.symbol == ticker_format:
-                    market_info = market
-                    used_ticker = ticker_format
-                    break
-            if market_info:
+        for market in order_books.order_books:
+            if market.symbol == ticker:
+                market_info = market
                 break
 
         if market_info is None:
-            available_tickers = [market.symbol for market in order_books.order_books]
-            self.logger.log(f"Ticker '{original_ticker}' not found on Lighter exchange", "ERROR")
-            self.logger.log(f"Tried formats: {', '.join(ticker_formats)}", "ERROR")
-            self.logger.log(f"Available tickers: {', '.join(available_tickers)}", "ERROR")
-            raise ValueError(f"Ticker '{original_ticker}' not found on Lighter exchange. Tried formats: {', '.join(ticker_formats)}. Available tickers: {', '.join(available_tickers)}")
-        
-        # Log the successful ticker format match
-        if used_ticker != original_ticker:
-            self.logger.log(f"Ticker '{original_ticker}' matched as '{used_ticker}' on Lighter exchange", "INFO")
+            self.logger.log("Failed to get markets", "ERROR")
+            raise ValueError("Failed to get markets")
 
         market_summary = await order_api.order_book_details(market_id=market_info.market_id)
         order_book_details = market_summary.order_book_details[0]
