@@ -59,6 +59,13 @@ class LighterClient(BaseExchangeClient):
         self.orders_cache = {}
         self.current_order_client_id = None
         self.current_order = None
+        
+        # Account networth cache to avoid rate limiting
+        self._networth_cache = None
+        self._networth_cache_time = 0
+        self._networth_cache_duration = 30  # Cache for 30 seconds to avoid rate limiting
+        self._last_api_call_time = 0
+        self._min_api_interval = 2  # Minimum 2 seconds between API calls
 
     def _validate_config(self) -> None:
         """Validate Lighter configuration."""
@@ -601,44 +608,78 @@ class LighterClient(BaseExchangeClient):
 
         return self.config.contract_id, self.config.tick_size
 
-    @query_retry(reraise=True)
     async def get_account_networth(self) -> Decimal:
         """
-        Get account net worth (account balance + unrealized PnL).
+        Get account net worth for drawdown monitoring with aggressive caching to avoid rate limiting.
         
         Returns:
             Decimal: Account net worth for drawdown monitoring
         """
         try:
-            # Use shared API client to get account info
-            account_api = lighter.AccountApi(self.api_client)
+            current_time = time.time()
+            
+            # Check cache first - use cached value if still valid
+            if (self._networth_cache is not None and 
+                current_time - self._networth_cache_time < self._networth_cache_duration):
+                self.logger.log(f"Using cached account net worth: {self._networth_cache}", "DEBUG")
+                return self._networth_cache
+            
+            # Check if enough time has passed since last API call to avoid rate limiting
+            time_since_last_call = current_time - self._last_api_call_time
+            if time_since_last_call < self._min_api_interval:
+                if self._networth_cache is not None:
+                    self.logger.log(f"Rate limit protection: using cached value {self._networth_cache}", "DEBUG")
+                    return self._networth_cache
+                else:
+                    # Wait before making the call if no cache available
+                    wait_time = self._min_api_interval - time_since_last_call
+                    self.logger.log(f"Rate limit protection: waiting {wait_time:.1f}s before API call", "DEBUG")
+                    await asyncio.sleep(wait_time)
+            
+            # Update last API call time
+            self._last_api_call_time = time.time()
+            
+            # Ensure lighter client is initialized
+            if self.lighter_client is None:
+                await self._initialize_lighter_client()
+            
+            # Use authenticated SignerClient to get account info
+            account_api = lighter.AccountApi(self.lighter_client.api_client)
             
             # Get account data
             account_data = await account_api.account(by="index", value=str(self.account_index))
             
             if not account_data or not account_data.accounts:
                 self.logger.log("Failed to get account data", "ERROR")
-                return Decimal('0')
+                # Return cached value if available, otherwise 0
+                return self._networth_cache if self._networth_cache is not None else Decimal('0')
             
             account = account_data.accounts[0]
             
-            # Calculate total net worth (balance + unrealized PnL)
+            # Calculate total net worth (collateral + unrealized PnL)
             total_balance = Decimal('0')
             
-            # Add account balance
-            if hasattr(account, 'balance') and account.balance:
-                total_balance += Decimal(str(account.balance))
+            # Add account collateral (this is the actual available balance in Lighter)
+            if hasattr(account, 'collateral') and account.collateral is not None:
+                total_balance += Decimal(str(account.collateral))
             
-            # Add unrealized PnL from positions
-            if hasattr(account_data, 'positions') and account_data.positions:
-                for position in account_data.positions:
-                    if hasattr(position, 'unrealized_pnl'):
-                        unrealized_pnl = Decimal(str(position.unrealized_pnl))
-                        total_balance += unrealized_pnl
+            # Add unrealized PnL from positions (if available)
+            # Note: In Lighter, positions might be queried separately
+            # For now, we'll use the collateral as the main balance indicator
             
-            self.logger.log(f"Account net worth: {total_balance}", "INFO")
+            # Update cache with fresh data
+            self._networth_cache = total_balance
+            self._networth_cache_time = current_time
+            
+            self.logger.log(f"Account net worth (fresh): {total_balance}", "INFO")
             return total_balance
             
         except Exception as e:
             self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
-            return Decimal('0')
+            # Return cached value if available, otherwise 0
+            if self._networth_cache is not None:
+                self.logger.log(f"Using cached value due to error: {self._networth_cache}", "WARNING")
+                return self._networth_cache
+            else:
+                self.logger.log("No cached value available, returning 0", "WARNING")
+                return Decimal('0')

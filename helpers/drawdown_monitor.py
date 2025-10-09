@@ -182,6 +182,26 @@ class DrawdownMonitor:
                        f"Medium: {self.config.medium_warning_threshold*100}%, "
                        f"Severe: {self.config.severe_stop_loss_threshold*100}%", "INFO")
     
+    def should_update_networth(self) -> bool:
+        """
+        检查是否需要更新净值（基于频率限制）
+        
+        Returns:
+            bool: 是否需要更新净值
+        """
+        if not self.is_monitoring:
+            return False
+            
+        if self.stop_loss_triggered:
+            return False
+            
+        if self.config.update_frequency_seconds <= 0:
+            return True
+            
+        current_time = time.time()
+        time_since_last = current_time - self.last_update_time
+        return time_since_last >= self.config.update_frequency_seconds
+
     def update_networth_with_fallback(self, current_networth: Optional[Decimal] = None) -> bool:
         """
         更新净值，支持失败时使用缓存值
@@ -209,8 +229,133 @@ class DrawdownMonitor:
         self.last_successful_networth = current_networth
         self.last_successful_update_time = time.time()
         
-        # 使用原有的更新逻辑
-        return self.update_networth(current_networth)
+        # 直接调用核心更新逻辑，跳过频率检查（因为在 trading_bot.py 中已经检查过了）
+        return self._update_networth_core(current_networth)
+    
+    def _update_networth_core(self, current_networth: Decimal) -> bool:
+        """
+        核心净值更新逻辑，跳过频率检查
+        
+        Args:
+            current_networth: 当前净值
+            
+        Returns:
+            bool: 是否应该继续交易（False表示触发止损）
+        """
+        method_start_time = time.time()
+        
+        try:
+            # 记录方法调用详情
+            self.logger.log(f"_update_networth_core called with value: ${current_networth}", "DEBUG")
+            
+            # 状态检查
+            if not self.is_monitoring:
+                self.logger.log("Drawdown monitoring is not active, skipping update", "DEBUG")
+                return False
+                
+            if self.stop_loss_triggered:
+                self.logger.log("Stop loss already triggered, skipping update", "DEBUG")
+                return False
+            
+            # 数据验证
+            try:
+                validation_result = self._validate_networth_input(current_networth)
+                if not validation_result['valid']:
+                    self.logger.log(f"Invalid networth input: {validation_result['reason']}", "ERROR")
+                    return True  # 跳过此次更新但继续监控
+            except NetworthValidationError as e:
+                self.logger.log(f"Networth validation failed: {e}. Context: {e.context}", "ERROR")
+                self.logger.log(f"Invalid networth value: {e.networth_value}", "ERROR")
+                return True  # 跳过此次更新但继续监控
+            
+            current_time = time.time()
+            
+            # 保存上一次的净值用于比较
+            previous_networth = self.current_networth
+            
+            # 更新净值历史（用于平滑处理）
+            try:
+                self._update_networth_history(current_networth)
+            except Exception as e:
+                self.logger.log(f"Error updating networth history: {e}", "ERROR")
+                # 使用当前值作为备用方案
+                self.networth_history = [current_networth]
+            
+            # 计算平滑后的净值
+            try:
+                smoothed_networth = self._calculate_smoothed_networth()
+                self.current_networth = smoothed_networth
+                self.logger.log(f"Smoothing calculation: raw=${current_networth}, smoothed=${smoothed_networth}, history_size={len(self.networth_history)}", "DEBUG")
+            except Exception as e:
+                self.logger.log(f"Error calculating smoothed networth: {e}, using raw value", "ERROR")
+                self.current_networth = current_networth
+                smoothed_networth = current_networth
+            
+            # 记录净值变化
+            try:
+                self._log_networth_change(previous_networth, current_networth)
+            except Exception as e:
+                self.logger.log(f"Error logging networth change: {e}", "ERROR")
+            
+            # 更新会话峰值
+            try:
+                peak_updated = self._update_session_peak(current_networth)
+                if peak_updated:
+                    self.logger.log(f"Session peak updated to ${self.session_peak_networth}", "DEBUG")
+            except Exception as e:
+                self.logger.log(f"Error updating session peak: {e}", "ERROR")
+            
+            # 计算回撤率
+            try:
+                drawdown_rate = self._calculate_drawdown_rate()
+                raw_drawdown_rate = self._calculate_raw_drawdown_rate(current_networth)
+                self.logger.log(f"Drawdown calculation: smoothed={drawdown_rate*100:.4f}%, raw={raw_drawdown_rate*100:.4f}%", "DEBUG")
+            except Exception as e:
+                self.logger.log(f"Error calculating drawdown rates: {e}", "ERROR")
+                drawdown_rate = Decimal("0")
+                raw_drawdown_rate = Decimal("0")
+            
+            # 检查回撤级别
+            try:
+                new_level = self._determine_drawdown_level(drawdown_rate, raw_drawdown_rate)
+                
+                # 处理级别变化
+                if new_level != self.current_level:
+                    self.logger.log(f"Drawdown level change detected: {self.current_level.value} -> {new_level.value}", "DEBUG")
+                    self._handle_level_change(self.current_level, new_level, drawdown_rate)
+                    self.current_level = new_level
+                else:
+                    self.logger.log(f"Drawdown level unchanged: {new_level.value}", "DEBUG")
+                    
+            except Exception as e:
+                self.logger.log(f"Error in drawdown level processing: {e}", "ERROR")
+                # 保持当前级别不变
+            
+            # 更新时间戳
+            self.last_update_time = current_time
+            
+            # 记录详细状态
+            self._log_detailed_status(current_networth, smoothed_networth, drawdown_rate, new_level)
+            
+            # 性能监控
+            execution_time = time.time() - method_start_time
+            if execution_time > 0.1:  # 如果执行时间超过100ms则记录
+                self.logger.log(f"_update_networth_core execution time: {execution_time:.3f}s", "WARNING")
+            else:
+                self.logger.log(f"_update_networth_core completed in {execution_time:.3f}s", "DEBUG")
+            
+            # 返回结果
+            result = not self.stop_loss_triggered
+            self.logger.log(f"_update_networth_core returning: {result} (stop_loss_triggered={self.stop_loss_triggered})", "DEBUG")
+            return result
+            
+        except Exception as e:
+            execution_time = time.time() - method_start_time
+            self.logger.log(f"Critical error in _update_networth_core after {execution_time:.3f}s: {e}", "ERROR")
+            import traceback
+            self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
+            # 在发生严重错误时，保守地返回True以继续监控
+            return True
     
     def _update_networth_failure(self) -> bool:
         """处理净值获取失败的情况"""

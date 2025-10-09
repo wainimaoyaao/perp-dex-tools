@@ -110,25 +110,29 @@ start_bot() {
     echo -e "${GREEN}🚀 启动 Lighter 交易机器人...${NC}"
     
     # 构建启动命令
-    local cmd="$LIGHTER_ENV_PATH/bin/python3 trading_bot.py"
+    local cmd="$LIGHTER_ENV_PATH/bin/python3 runbot.py"
     cmd="$cmd --exchange lighter"
     cmd="$cmd --ticker $LIGHTER_TICKER"
     cmd="$cmd --quantity $LIGHTER_QUANTITY"
-    cmd="$cmd --take_profit $LIGHTER_TAKE_PROFIT"
+    cmd="$cmd --take-profit $LIGHTER_TAKE_PROFIT"
     cmd="$cmd --direction $LIGHTER_DIRECTION"
-    cmd="$cmd --max_orders $LIGHTER_MAX_ORDERS"
-    cmd="$cmd --wait_time $LIGHTER_WAIT_TIME"
-    cmd="$cmd --grid_step $LIGHTER_GRID_STEP"
-    cmd="$cmd --stop_price $LIGHTER_STOP_PRICE"
-    cmd="$cmd --pause_price $LIGHTER_PAUSE_PRICE"
-    cmd="$cmd --aster_boost $LIGHTER_ASTER_BOOST"
+    cmd="$cmd --max-orders $LIGHTER_MAX_ORDERS"
+    cmd="$cmd --wait-time $LIGHTER_WAIT_TIME"
+    cmd="$cmd --grid-step $LIGHTER_GRID_STEP"
+    cmd="$cmd --stop-price $LIGHTER_STOP_PRICE"
+    cmd="$cmd --pause-price $LIGHTER_PAUSE_PRICE"
+    
+    # 添加 aster-boost 参数（如果启用）
+    if [ "$LIGHTER_ASTER_BOOST" = "true" ]; then
+        cmd="$cmd --aster-boost"
+    fi
     
     # 添加回撤监控参数
     if [ "$LIGHTER_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
-        cmd="$cmd --enable_drawdown_monitor"
-        cmd="$cmd --drawdown_light_threshold $LIGHTER_DRAWDOWN_LIGHT_THRESHOLD"
-        cmd="$cmd --drawdown_medium_threshold $LIGHTER_DRAWDOWN_MEDIUM_THRESHOLD"
-        cmd="$cmd --drawdown_severe_threshold $LIGHTER_DRAWDOWN_SEVERE_THRESHOLD"
+        cmd="$cmd --enable-drawdown-monitor"
+        cmd="$cmd --drawdown-light-threshold $LIGHTER_DRAWDOWN_LIGHT_THRESHOLD"
+        cmd="$cmd --drawdown-medium-threshold $LIGHTER_DRAWDOWN_MEDIUM_THRESHOLD"
+        cmd="$cmd --drawdown-severe-threshold $LIGHTER_DRAWDOWN_SEVERE_THRESHOLD"
     fi
     
     # 启动机器人并重定向输出到日志文件

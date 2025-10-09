@@ -621,8 +621,13 @@ class TradingBot:
                 # Check drawdown if monitor is enabled
                 if self.drawdown_monitor:
                     try:
-                        current_networth = await self.exchange_client.get_account_networth()
-                        should_continue = self.drawdown_monitor.update_networth_with_fallback(current_networth)
+                        # Only fetch networth if update is needed (based on frequency)
+                        if self.drawdown_monitor.should_update_networth():
+                            current_networth = await self.exchange_client.get_account_networth()
+                            should_continue = self.drawdown_monitor.update_networth_with_fallback(current_networth)
+                        else:
+                            # Skip API call but still check if stop loss was triggered
+                            should_continue = not self.drawdown_monitor.is_stop_loss_triggered()
                         
                         # Check if stop loss was triggered (moved from except block to try block)
                         if not should_continue or self.drawdown_monitor.is_stop_loss_triggered():
