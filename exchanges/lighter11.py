@@ -129,28 +129,62 @@ class LighterClient(BaseExchangeClient):
             # Initialize Lighter client
             await self._initialize_lighter_client()
 
-            # Add market config to config for WebSocket manager
-            self.config.market_index = self.config.contract_id
-            self.config.account_index = self.account_index
-            self.config.lighter_client = self.lighter_client
+            # Only initialize WebSocket manager if contract_id is available
+            if hasattr(self.config, 'contract_id') and self.config.contract_id:
+                # Add market config to config for WebSocket manager
+                self.config.market_index = self.config.contract_id
+                self.config.account_index = self.account_index
+                self.config.lighter_client = self.lighter_client
 
-            # Initialize WebSocket manager (using custom implementation)
-            self.ws_manager = LighterCustomWebSocketManager(
-                config=self.config,
-                order_update_callback=self._handle_websocket_order_update
-            )
+                # Initialize WebSocket manager (using custom implementation)
+                self.ws_manager = LighterCustomWebSocketManager(
+                    config=self.config,
+                    order_update_callback=self._handle_websocket_order_update
+                )
 
-            # Set logger for WebSocket manager
-            self.ws_manager.set_logger(self.logger)
+                # Set logger for WebSocket manager
+                self.ws_manager.set_logger(self.logger)
 
-            # Start WebSocket connection in background task
-            asyncio.create_task(self.ws_manager.connect())
-            # Wait a moment for connection to establish
-            await asyncio.sleep(2)
+                # Start WebSocket connection in background task
+                asyncio.create_task(self.ws_manager.connect())
+                # Wait a moment for connection to establish
+                await asyncio.sleep(2)
+                self.logger.log(f"WebSocket manager initialized with contract_id: {self.config.contract_id}", "INFO")
+            else:
+                self.logger.log("WebSocket manager not initialized - contract_id not available yet", "INFO")
 
         except Exception as e:
             self.logger.log(f"Error connecting to Lighter: {e}", "ERROR")
             raise
+
+    async def initialize_websocket_manager(self) -> None:
+        """Initialize WebSocket manager after contract_id is set."""
+        try:
+            if not hasattr(self, 'ws_manager') or self.ws_manager is None:
+                if hasattr(self.config, 'contract_id') and self.config.contract_id:
+                    # Add market config to config for WebSocket manager
+                    self.config.market_index = self.config.contract_id
+                    self.config.account_index = self.account_index
+                    self.config.lighter_client = self.lighter_client
+
+                    # Initialize WebSocket manager (using custom implementation)
+                    self.ws_manager = LighterCustomWebSocketManager(
+                        config=self.config,
+                        order_update_callback=self._handle_websocket_order_update
+                    )
+
+                    # Set logger for WebSocket manager
+                    self.ws_manager.set_logger(self.logger)
+
+                    # Start WebSocket connection in background task
+                    asyncio.create_task(self.ws_manager.connect())
+                    # Wait a moment for connection to establish
+                    await asyncio.sleep(2)
+                    self.logger.log(f"WebSocket manager initialized with contract_id: {self.config.contract_id}", "INFO")
+                else:
+                    self.logger.log("Cannot initialize WebSocket manager - contract_id not available", "WARNING")
+        except Exception as e:
+            self.logger.log(f"Error initializing WebSocket manager: {e}", "ERROR")
 
     async def disconnect(self) -> None:
         """Disconnect from Lighter."""
@@ -230,6 +264,19 @@ class LighterClient(BaseExchangeClient):
 
             if status in ['FILLED', 'CANCELED']:
                 self.logger.log_transaction(order_id, side, filled_size, price, status)
+
+            # Call the order update handler for trading_bot.py
+            if self._order_update_handler:
+                self._order_update_handler({
+                    'order_id': order_id,
+                    'side': side,
+                    'order_type': order_type,
+                    'status': status,
+                    'size': size,
+                    'price': price,
+                    'contract_id': self.config.contract_id,
+                    'filled_size': filled_size
+                })
 
     @query_retry(default_return=(0, 0))
     async def fetch_bbo_prices(self, contract_id: str) -> Tuple[Decimal, Decimal]:
@@ -331,6 +378,7 @@ class LighterClient(BaseExchangeClient):
             price=order_price,
             status=self.current_order.status
         )
+
 
     async def _get_active_close_orders(self, contract_id: str) -> int:
         """Get active close orders for a contract using official SDK."""
@@ -548,4 +596,49 @@ class LighterClient(BaseExchangeClient):
             self.logger.log("Failed to get tick size", "ERROR")
             raise ValueError("Failed to get tick size")
 
+        # Initialize WebSocket manager now that contract_id is set
+        await self.initialize_websocket_manager()
+
         return self.config.contract_id, self.config.tick_size
+
+    @query_retry(reraise=True)
+    async def get_account_networth(self) -> Decimal:
+        """
+        Get account net worth (account balance + unrealized PnL).
+        
+        Returns:
+            Decimal: Account net worth for drawdown monitoring
+        """
+        try:
+            # Use shared API client to get account info
+            account_api = lighter.AccountApi(self.api_client)
+            
+            # Get account data
+            account_data = await account_api.account(by="index", value=str(self.account_index))
+            
+            if not account_data or not account_data.accounts:
+                self.logger.log("Failed to get account data", "ERROR")
+                return Decimal('0')
+            
+            account = account_data.accounts[0]
+            
+            # Calculate total net worth (balance + unrealized PnL)
+            total_balance = Decimal('0')
+            
+            # Add account balance
+            if hasattr(account, 'balance') and account.balance:
+                total_balance += Decimal(str(account.balance))
+            
+            # Add unrealized PnL from positions
+            if hasattr(account_data, 'positions') and account_data.positions:
+                for position in account_data.positions:
+                    if hasattr(position, 'unrealized_pnl'):
+                        unrealized_pnl = Decimal(str(position.unrealized_pnl))
+                        total_balance += unrealized_pnl
+            
+            self.logger.log(f"Account net worth: {total_balance}", "INFO")
+            return total_balance
+            
+        except Exception as e:
+            self.logger.log(f"Error fetching account net worth: {e}", "ERROR")
+            return Decimal('0')
