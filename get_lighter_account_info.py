@@ -9,7 +9,7 @@ Usage:
     python get_lighter_account_info.py
 
 Make sure you have set the following environment variables:
-    - API_KEY_PRIVATE_KEY: Your Lighter API private key
+    - API_KEY_PRIVATE_KEY: Your Lighter API private key (not used in this version)
     - LIGHTER_ACCOUNT_INDEX: Initial account index (can be 0 if unknown)
     - LIGHTER_API_KEY_INDEX: API key index (usually 0)
 """
@@ -25,10 +25,9 @@ load_dotenv()
 # Import Lighter SDK
 try:
     import lighter
-    from lighter import SignerClient, ApiClient, Configuration
 except ImportError:
     print("❌ Error: Lighter SDK not installed. Please install it with:")
-    print("pip install lighter-python")
+    print("pip install git+https://github.com/elliottech/lighter-python.git")
     exit(1)
 
 # Configure logging
@@ -49,37 +48,20 @@ class LighterAccountInfo:
         self.api_key_index = int(os.getenv('LIGHTER_API_KEY_INDEX', '0'))
         self.base_url = "https://mainnet.zklighter.elliot.ai"
         
-        if not self.api_key_private_key:
-            raise ValueError("❌ API_KEY_PRIVATE_KEY must be set in environment variables")
-        
-        self.client = None
+        # Note: The new API doesn't require private key for read operations
         self.api_client = None
-        self.l1_address = None
+        self.account_api = None
     
     async def initialize_client(self):
         """Initialize the Lighter client."""
         try:
             print("🔧 Initializing Lighter client...")
             
-            # Create configuration
-            config = Configuration(host=self.base_url)
-            
-            # Create API client
-            self.api_client = ApiClient(configuration=config)
-            
-            # Create signer client
-            self.client = SignerClient(
-                api_client=self.api_client,
-                api_key_private_key=self.api_key_private_key,
-                account_index=self.account_index,
-                api_key_index=self.api_key_index
-            )
-            
-            # Get L1 address from the client
-            self.l1_address = self.client.l1_address
+            # Create API client (no authentication needed for read operations)
+            self.api_client = lighter.ApiClient()
+            self.account_api = lighter.AccountApi(self.api_client)
             
             print(f"✅ Client initialized successfully")
-            print(f"📍 L1 Address: {self.l1_address}")
             print(f"📍 Current Account Index: {self.account_index}")
             print(f"📍 Current API Key Index: {self.api_key_index}")
             
@@ -112,44 +94,17 @@ class LighterAccountInfo:
             print("🏦 LIGHTER ACCOUNT INFORMATION")
             print("="*60)
             
-            account_instance = lighter.AccountApi(self.api_client)
-            
-            # Get account by L1 address
-            await self.print_api_result(
-                account_instance.account,
-                "Account by L1 Address",
-                by="l1_address",
-                value=self.l1_address
-            )
-            
             # Get account by index
             await self.print_api_result(
-                account_instance.account,
+                self.account_api.account,
                 "Account by Index",
                 by="index",
                 value=str(self.account_index)
             )
             
-            # Get all accounts by L1 address
-            accounts_result = await self.print_api_result(
-                account_instance.accounts_by_l1_address,
-                "All Accounts by L1 Address",
-                l1_address=self.l1_address
-            )
-            
-            # Parse and display account indices
-            if accounts_result and hasattr(accounts_result, 'accounts'):
-                print(f"\n📋 Available Account Indices:")
-                for i, account in enumerate(accounts_result.accounts):
-                    print(f"  Index {i}: {account}")
-                    if hasattr(account, 'account_index'):
-                        print(f"    Account Index: {account.account_index}")
-                    if hasattr(account, 'l1_address'):
-                        print(f"    L1 Address: {account.l1_address}")
-            
             # Get API keys for current account
             await self.print_api_result(
-                account_instance.apikeys,
+                self.account_api.apikeys,
                 "API Keys for Current Account",
                 account_index=self.account_index,
                 api_key_index=self.api_key_index
@@ -157,7 +112,7 @@ class LighterAccountInfo:
             
             # Get public pools
             await self.print_api_result(
-                account_instance.public_pools,
+                self.account_api.public_pools,
                 "Public Pools",
                 filter="all",
                 limit=5,
@@ -172,15 +127,13 @@ class LighterAccountInfo:
         """Test different account indices to find the correct one."""
         print(f"\n🔍 Testing different account indices...")
         
-        account_instance = lighter.AccountApi(self.api_client)
-        
         working_indices = []
         
         for test_index in range(5):  # Test indices 0-4
             try:
                 print(f"\n🧪 Testing account index: {test_index}")
                 
-                result = await account_instance.account(by="index", value=str(test_index))
+                result = await self.account_api.account(by="index", value=str(test_index))
                 
                 if result:
                     print(f"✅ Index {test_index} works: {result}")
@@ -208,16 +161,7 @@ async def main():
     print("🚀 Lighter Account Information Tool")
     print("="*50)
     
-    # Check environment variables
-    required_vars = ['API_KEY_PRIVATE_KEY']
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
-    
-    if missing_vars:
-        print(f"❌ Missing required environment variables: {missing_vars}")
-        print("\nPlease set the following in your .env file:")
-        for var in missing_vars:
-            print(f"  {var}=your_value_here")
-        return
+    # Note: This version uses public API endpoints and doesn't require authentication
     
     account_info = None
     
