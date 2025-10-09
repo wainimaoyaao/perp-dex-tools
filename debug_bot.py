@@ -131,16 +131,38 @@ async def test_exchange_connection(config):
         
         # Test market data
         print("Testing market data...")
-        bid, ask = await exchange_client.fetch_bbo_prices(contract_id)
-        print(f"✅ BBO Prices - Bid: {bid}, Ask: {ask}")
+        try:
+            bid, ask = await exchange_client.fetch_bbo_prices(contract_id)
+            print(f"✅ BBO Prices - Bid: {bid}, Ask: {ask}")
+            if bid > 0 and ask > 0:
+                print(f"✅ Market data is working correctly!")
+            else:
+                print(f"⚠️ Market data returned zero values - WebSocket may not be connected")
+        except Exception as e:
+            print(f"❌ BBO Prices failed: {e}")
+
+        print("Testing WebSocket connection status...")
+        try:
+            if hasattr(exchange_client, 'ws_manager') and exchange_client.ws_manager:
+                if hasattr(exchange_client.ws_manager, 'running') and exchange_client.ws_manager.running:
+                    print(f"✅ WebSocket is running")
+                    # Test order book data
+                    best_levels = exchange_client.ws_manager.get_best_levels()
+                    print(f"✅ Order book best levels: {best_levels}")
+                else:
+                    print(f"❌ WebSocket is not running")
+            else:
+                print(f"❌ WebSocket manager not initialized")
+        except Exception as e:
+            print(f"❌ WebSocket status check failed: {e}")
         
         # Test account info
         print("Testing account information...")
         try:
-            networth = await exchange_client.get_account_networth()
-            print(f"✅ Account Net Worth: {networth}")
+            net_worth = await exchange_client.get_account_networth()
+            print(f"✅ Account Net Worth: {net_worth}")
         except Exception as e:
-            print(f"⚠️ Account net worth test failed: {e}")
+            print(f"❌ Account Net Worth failed: {e}")
         
         # Disconnect
         await exchange_client.disconnect()
