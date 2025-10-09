@@ -19,6 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
+# 加载日志工具库
+source "$SCRIPT_DIR/log_utils.sh"
+
 # 函数：显示使用说明
 show_usage() {
     echo -e "${BOLD}${GREEN}交易机器人状态检查脚本 v2.1${NC}"
@@ -302,10 +305,23 @@ analyze_log_file() {
         echo -e "${CYAN}   大小: $size, 行数: $lines${NC}"
         echo -e "${CYAN}   修改时间: $modified${NC}"
         
-        # 检查日志文件是否过大
+        # 检查日志轮转状态
+        if command -v analyze_log_rotation_status >/dev/null 2>&1; then
+            analyze_log_rotation_status "$log_file"
+        fi
+        
+        # 检查日志文件是否过大（考虑日志轮转配置）
         local size_mb=$(du -m "$log_file" | cut -f1)
-        if [ "$size_mb" -gt 100 ]; then
-            log_issue "warning" "$log_file 文件过大 (${size}MB)，建议清理"
+        local max_size_mb=${LOG_MAX_SIZE_MB:-100}
+        
+        if [ "${LOG_ROTATION_ENABLED:-false}" = "true" ]; then
+            if [ "$size_mb" -gt "$((max_size_mb * 2))" ]; then
+                log_issue "warning" "$log_file 文件过大 (${size}MB)，超过轮转阈值的2倍"
+            fi
+        else
+            if [ "$size_mb" -gt "$max_size_mb" ]; then
+                log_issue "warning" "$log_file 文件过大 (${size}MB)，建议启用日志轮转"
+            fi
         fi
         
         # 检查最近的错误

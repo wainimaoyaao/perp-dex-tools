@@ -17,16 +17,17 @@ cd "$PROJECT_ROOT"
 # 加载配置文件
 source ./scripts/bot_configs.sh
 
+# 加载日志工具函数库
+source ./scripts/log_utils.sh
+
 echo -e "${GREEN}=== 启动 GRVT 交易机器人 ===${NC}"
 echo -e "${BLUE}启动时间: $(date)${NC}"
 echo -e "${BLUE}工作目录: $SCRIPT_DIR${NC}"
 
-# 函数：检查并创建日志目录
+# 函数：检查并创建日志目录 (已被log_utils.sh中的函数替代)
 setup_logging() {
-    if [ ! -d "logs" ]; then
-        mkdir -p logs
-        echo -e "${CYAN}创建日志目录: logs/${NC}"
-    fi
+    # 使用新的日志准备函数
+    prepare_log_file "$GRVT_LOG_FILE" "GRVT"
 }
 
 # 函数：检查虚拟环境
@@ -134,8 +135,14 @@ if [ "$GRVT_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
 fi
 
 # 启动机器人
+local redirect_symbol=$(get_log_redirect)
 echo -e "${YELLOW}启动 GRVT 交易机器人...${NC}"
-nohup $START_CMD > "$GRVT_LOG_FILE" 2>&1 &
+echo -e "${CYAN}日志输出: $GRVT_LOG_FILE (模式: ${redirect_symbol})${NC}"
+
+# 在日志文件中添加启动标记
+echo "=== $(date '+%Y-%m-%d %H:%M:%S') - GRVT Bot Starting (PID: $$) ===" $redirect_symbol "$GRVT_LOG_FILE"
+
+nohup $START_CMD $redirect_symbol "$GRVT_LOG_FILE" 2>&1 &
 
 GRVT_PID=$!
 echo -e "${CYAN}GRVT PID: $GRVT_PID${NC}"

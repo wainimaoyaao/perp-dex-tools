@@ -23,7 +23,7 @@ echo -e "${BLUE}工作目录: $PROJECT_ROOT${NC}"
 
 # 检查独立启动脚本是否存在
 echo -e "\n${GREEN}=== 检查启动脚本 ===${NC}"
-SCRIPTS_TO_CHECK=("start_paradex.sh" "start_grvt.sh" "start_extended.sh")
+SCRIPTS_TO_CHECK=("start_paradex.sh" "start_grvt.sh" "start_extended.sh" "start_lighter.sh")
 MISSING_SCRIPTS=()
 
 for script in "${SCRIPTS_TO_CHECK[@]}"; do
@@ -102,6 +102,19 @@ else
     EXTENDED_SUCCESS=false
 fi
 
+echo -e "\n${CYAN}等待 3 秒后启动下一个机器人...${NC}"
+sleep 3
+
+# 启动 Lighter 机器人
+echo -e "${CYAN}启动 Lighter 机器人...${NC}"
+if ./scripts/start_lighter.sh; then
+    echo -e "${GREEN}✅ Lighter 机器人启动脚本执行完成${NC}"
+    LIGHTER_SUCCESS=true
+else
+    echo -e "${RED}❌ Lighter 机器人启动失败${NC}"
+    LIGHTER_SUCCESS=false
+fi
+
 # 等待所有进程稳定启动
 sleep 3
 
@@ -120,7 +133,7 @@ fi
 
 # 显示日志文件信息
 echo -e "\n${GREEN}=== 日志文件 ===${NC}"
-for log_file in "paradex_output.log" "grvt_output.log" "extended_output.log"; do
+for log_file in "paradex_output.log" "grvt_output.log" "extended_output.log" "lighter_output.log"; do
     if [ -f "$log_file" ]; then
         size=$(du -h "$log_file" | cut -f1)
         echo -e "${CYAN}$log_file (大小: $size)${NC}"
@@ -134,11 +147,13 @@ echo -e "${YELLOW}启动单个机器人:${NC}"
 echo -e "  Paradex: ./scripts/start_paradex.sh"
 echo -e "  GRVT: ./scripts/start_grvt.sh"
 echo -e "  Extended: ./scripts/start_extended.sh"
+echo -e "  Lighter: ./scripts/start_lighter.sh"
 echo -e "${YELLOW}监控日志:${NC}"
 echo -e "  Paradex: tail -f paradex_output.log"
 echo -e "  GRVT: tail -f grvt_output.log"
 echo -e "  Extended: tail -f extended_output.log"
-echo -e "  同时监控: tail -f paradex_output.log grvt_output.log extended_output.log"
+echo -e "  Lighter: tail -f lighter_output.log"
+echo -e "  同时监控: tail -f paradex_output.log grvt_output.log extended_output.log lighter_output.log"
 echo -e "${YELLOW}其他命令:${NC}"
 echo -e "  检查状态: ./scripts/check_bots.sh"
 echo -e "  停止所有: ./scripts/stop_bots.sh"
@@ -147,7 +162,7 @@ echo -e "  修改配置: nano scripts/bot_configs.sh"
 # 启动结果总结
 echo -e "\n${GREEN}=== 启动结果总结 ===${NC}"
 TOTAL_SUCCESS=0
-TOTAL_BOTS=3
+TOTAL_BOTS=4
 
 if [ "$PARADEX_SUCCESS" = true ]; then
     TOTAL_SUCCESS=$((TOTAL_SUCCESS + 1))
@@ -156,6 +171,9 @@ if [ "$GRVT_SUCCESS" = true ]; then
     TOTAL_SUCCESS=$((TOTAL_SUCCESS + 1))
 fi
 if [ "$EXTENDED_SUCCESS" = true ]; then
+    TOTAL_SUCCESS=$((TOTAL_SUCCESS + 1))
+fi
+if [ "$LIGHTER_SUCCESS" = true ]; then
     TOTAL_SUCCESS=$((TOTAL_SUCCESS + 1))
 fi
 

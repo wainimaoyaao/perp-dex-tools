@@ -17,6 +17,13 @@ cd "$PROJECT_ROOT"
 # 加载配置文件
 source ./scripts/bot_configs.sh
 
+# 加载日志工具函数库
+if [ -f "scripts/log_utils.sh" ]; then
+    source ./scripts/log_utils.sh
+else
+    echo -e "${YELLOW}警告: 找不到日志工具函数库 scripts/log_utils.sh${NC}"
+fi
+
 # 函数：记录问题
 log_issue() {
     echo -e "${RED}❌ $1${NC}"
@@ -86,11 +93,30 @@ echo ""
 
 # 2. 检查日志文件
 echo -e "${GREEN}=== 日志状态 ===${NC}"
+
+# 检查日志轮转状态（如果log_utils.sh可用）
+if command -v analyze_log_rotation_status >/dev/null 2>&1; then
+    echo -e "${CYAN}${BOLD}--- 日志轮转状态 ---${NC}"
+    analyze_log_rotation_status "$EXTENDED_LOG_FILE"
+    echo ""
+fi
+
 if [ -f "$EXTENDED_LOG_FILE" ]; then
     log_success "日志文件存在: $EXTENDED_LOG_FILE"
     
     # 检查日志文件大小
     LOG_SIZE=$(ls -lh "$EXTENDED_LOG_FILE" | awk '{print $5}')
+    LOG_SIZE_MB=$(du -m "$EXTENDED_LOG_FILE" | cut -f1)
+    
+    # 使用配置的最大大小进行检查
+    local max_size=${LOG_MAX_SIZE_MB:-50}
+    if [ -n "$LOG_SIZE_MB" ] && [ "$LOG_SIZE_MB" -gt $max_size ]; then
+        if [ "$LOG_ROTATION_ENABLED" = "true" ]; then
+            log_warning "日志文件大小 (${LOG_SIZE_MB}MB) 超过配置的最大值 (${max_size}MB)，将在下次启动时轮转"
+        else
+            log_warning "日志文件较大 (${LOG_SIZE_MB}MB)，建议启用日志轮转或定期清理"
+        fi
+    fi
     echo -e "${CYAN}日志大小: $LOG_SIZE${NC}"
     
     # 检查最后修改时间

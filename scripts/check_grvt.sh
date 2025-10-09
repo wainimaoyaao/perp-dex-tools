@@ -25,6 +25,13 @@ else
     exit 1
 fi
 
+# 加载日志工具函数库
+if [ -f "scripts/log_utils.sh" ]; then
+    source ./scripts/log_utils.sh
+else
+    echo -e "${YELLOW}警告: 找不到日志工具函数库 scripts/log_utils.sh${NC}"
+fi
+
 # 全局变量
 TOTAL_ISSUES=0
 CRITICAL_ISSUES=0
@@ -174,6 +181,14 @@ fi
 
 # 检查 GRVT 日志文件
 echo -e "\n${BOLD}${GREEN}=== GRVT 日志状态 ===${NC}"
+
+# 检查日志轮转状态（如果log_utils.sh可用）
+if command -v analyze_log_rotation_status >/dev/null 2>&1; then
+    echo -e "${CYAN}${BOLD}--- 日志轮转状态 ---${NC}"
+    analyze_log_rotation_status "$GRVT_LOG_FILE"
+    echo ""
+fi
+
 if [ -f "$GRVT_LOG_FILE" ]; then
     size=$(du -h "$GRVT_LOG_FILE" | cut -f1)
     lines=$(wc -l < "$GRVT_LOG_FILE")
@@ -185,8 +200,15 @@ if [ -f "$GRVT_LOG_FILE" ]; then
     
     # 检查日志文件是否过大
     size_mb=$(du -m "$GRVT_LOG_FILE" | cut -f1)
-    if [ -n "$size_mb" ] && [ "$size_mb" -gt 100 ]; then
-        log_issue "warning" "日志文件过大 (${size}MB)，建议清理"
+    if [ -n "$size_mb" ]; then
+        local max_size=${LOG_MAX_SIZE_MB:-50}
+        if [ "$size_mb" -gt $max_size ]; then
+            if [ "$LOG_ROTATION_ENABLED" = "true" ]; then
+                log_issue "warning" "日志文件大小 (${size_mb}MB) 超过配置的最大值 (${max_size}MB)，将在下次启动时轮转"
+            else
+                log_issue "warning" "日志文件过大 (${size_mb}MB)，建议启用日志轮转或定期清理"
+            fi
+        fi
     fi
     
     # 检查最近的错误
