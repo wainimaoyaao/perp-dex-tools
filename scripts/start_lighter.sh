@@ -132,15 +132,20 @@ start_bot() {
     fi
     
     # 启动机器人并重定向输出到日志文件
-    local redirect_symbol=$(get_log_redirect)
+    redirect_symbol=$(get_log_redirect)
     echo -e "${CYAN}执行命令: $cmd${NC}"
     echo -e "${CYAN}日志输出: logs/$LIGHTER_LOG_FILE (模式: ${redirect_symbol})${NC}"
     
     # 在日志文件中添加启动标记
     echo "=== $(date '+%Y-%m-%d %H:%M:%S') - Lighter Bot Starting (PID: $$) ===" $redirect_symbol "logs/$LIGHTER_LOG_FILE"
     
-    nohup $cmd $redirect_symbol "logs/$LIGHTER_LOG_FILE" 2>&1 &
-    local bot_pid=$!
+    # 根据重定向模式执行命令
+    if [ "$redirect_symbol" = ">>" ]; then
+        nohup $cmd >> "logs/$LIGHTER_LOG_FILE" 2>&1 &
+    else
+        nohup $cmd > "logs/$LIGHTER_LOG_FILE" 2>&1 &
+    fi
+    bot_pid=$!
     
     # 等待一下确保进程启动
     sleep 3

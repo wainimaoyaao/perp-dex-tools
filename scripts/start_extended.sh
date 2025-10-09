@@ -140,14 +140,19 @@ if [ "$EXTENDED_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
 fi
 
 # 启动机器人
-local redirect_symbol=$(get_log_redirect)
+redirect_symbol=$(get_log_redirect)
 echo -e "${YELLOW}启动 Extended 交易机器人...${NC}"
 echo -e "${CYAN}日志输出: $EXTENDED_LOG_FILE (模式: ${redirect_symbol})${NC}"
 
 # 在日志文件中添加启动标记
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') - Extended Bot Starting (PID: $$) ===" $redirect_symbol "$EXTENDED_LOG_FILE"
 
-nohup $START_CMD $redirect_symbol "$EXTENDED_LOG_FILE" 2>&1 &
+# 根据重定向模式执行命令
+if [ "$redirect_symbol" = ">>" ]; then
+    nohup $START_CMD >> "$EXTENDED_LOG_FILE" 2>&1 &
+else
+    nohup $START_CMD > "$EXTENDED_LOG_FILE" 2>&1 &
+fi
 
 EXTENDED_PID=$!
 echo -e "${CYAN}Extended PID: $EXTENDED_PID${NC}"
