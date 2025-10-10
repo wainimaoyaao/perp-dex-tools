@@ -109,8 +109,8 @@ if [ -f "$EXTENDED_LOG_FILE" ]; then
     LOG_SIZE_MB=$(du -m "$EXTENDED_LOG_FILE" | cut -f1)
     
     # 使用配置的最大大小进行检查
-    local max_size=${LOG_MAX_SIZE_MB:-50}
-    if [ -n "$LOG_SIZE_MB" ] && [ "$LOG_SIZE_MB" -gt $max_size ]; then
+    max_size=${LOG_MAX_SIZE_MB:-50}
+    if [ -n "$LOG_SIZE_MB" ] && [ "$LOG_SIZE_MB" -gt "$max_size" ]; then
         if [ "$LOG_ROTATION_ENABLED" = "true" ]; then
             log_warning "日志文件大小 (${LOG_SIZE_MB}MB) 超过配置的最大值 (${max_size}MB)，将在下次启动时轮转"
         else

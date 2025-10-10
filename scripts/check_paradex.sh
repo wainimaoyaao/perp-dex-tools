@@ -201,8 +201,8 @@ if [ -f "$PARADEX_LOG_FILE" ]; then
     # 检查日志文件是否过大
     size_mb=$(du -m "$PARADEX_LOG_FILE" | cut -f1)
     if [ -n "$size_mb" ]; then
-        local max_size=${LOG_MAX_SIZE_MB:-50}
-        if [ "$size_mb" -gt $max_size ]; then
+        max_size=${LOG_MAX_SIZE_MB:-50}
+        if [ "$size_mb" -gt "$max_size" ]; then
             if [ "$LOG_ROTATION_ENABLED" = "true" ]; then
                 log_issue "warning" "日志文件大小 (${size_mb}MB) 超过配置的最大值 (${max_size}MB)，将在下次启动时轮转"
             else
@@ -246,7 +246,7 @@ if [ "$PARADEX_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
             echo -e "${CYAN}   当前回撤: $current_drawdown${NC}"
             
             # 提取回撤百分比进行风险评估
-            local drawdown_pct=$(echo "$current_drawdown" | grep -o '[0-9]\+\.[0-9]\+%\|[0-9]\+%' | head -1 | tr -d '%')
+            drawdown_pct=$(echo "$current_drawdown" | grep -o '[0-9]\+\.[0-9]\+%\|[0-9]\+%' | head -1 | tr -d '%')
             if [ -n "$drawdown_pct" ]; then
                 if (( $(echo "$drawdown_pct > 15" | bc -l 2>/dev/null || echo "0") )); then
                     log_issue "critical" "Paradex 回撤率过高: ${drawdown_pct}%"
