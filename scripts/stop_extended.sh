@@ -33,11 +33,11 @@ EXTENDED_PROCESSES=$(ps aux | grep "runbot.py.*extended" | grep -v grep)
 
 # 通过 PID 文件查找
 EXTENDED_PID=""
-if [ -f ".extended_pid" ]; then
-    EXTENDED_PID=$(cat .extended_pid)
+if [ -f "$EXTENDED_PID_FILE" ]; then
+    EXTENDED_PID=$(cat "$EXTENDED_PID_FILE")
     if ! ps -p "$EXTENDED_PID" > /dev/null 2>&1; then
         log_action "PID 文件中的进程 $EXTENDED_PID 已不存在，清理 PID 文件"
-        rm -f .extended_pid
+        rm -f "$EXTENDED_PID_FILE"
         EXTENDED_PID=""
     fi
 fi
@@ -47,8 +47,8 @@ if [ -z "$EXTENDED_PROCESSES" ] && [ -z "$EXTENDED_PID" ]; then
     echo -e "${YELLOW}⚠️  未找到运行中的 Extended 机器人${NC}"
     
     # 清理可能存在的 PID 文件
-    if [ -f ".extended_pid" ]; then
-        rm -f .extended_pid
+    if [ -f "$EXTENDED_PID_FILE" ]; then
+        rm -f "$EXTENDED_PID_FILE"
         log_action "清理过期的 PID 文件"
     fi
     
@@ -104,8 +104,8 @@ if [ -z "$FINAL_CHECK" ]; then
     echo -e "${GREEN}✅ Extended 机器人已成功停止${NC}"
     
     # 清理 PID 文件
-    if [ -f ".extended_pid" ]; then
-        rm -f .extended_pid
+    if [ -f "$EXTENDED_PID_FILE" ]; then
+        rm -f "$EXTENDED_PID_FILE"
         log_action "清理 PID 文件"
     fi
     

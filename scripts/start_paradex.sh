@@ -156,7 +156,7 @@ echo -e "${CYAN}Paradex PID: $PARADEX_PID${NC}"
 sleep 3
 if ps -p $PARADEX_PID > /dev/null 2>&1; then
     echo -e "${GREEN}✅ Paradex 机器人启动成功${NC}"
-    echo "$PARADEX_PID" > ".paradex_pid"
+    echo "$PARADEX_PID" > "$PARADEX_PID_FILE"
     
     # 检查日志中的初始化状态
     if [ -f "$PARADEX_LOG_FILE" ]; then

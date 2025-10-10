@@ -284,9 +284,9 @@ check_pid_file() {
     fi
 }
 
-check_pid_file "Paradex" ".paradex_pid"
+check_pid_file "Paradex" "$PARADEX_PID_FILE"
 check_pid_file "GRVT" "$GRVT_PID_FILE"
-check_pid_file "Extended" ".extended_pid"
+check_pid_file "Extended" "$EXTENDED_PID_FILE"
 
 # 检查日志文件
 echo -e "\n${BOLD}${GREEN}=== 日志文件状态 ===${NC}"
@@ -346,9 +346,9 @@ analyze_log_file() {
     echo ""
 }
 
-analyze_log_file "paradex_output.log"
-analyze_log_file "grvt_output.log"
-analyze_log_file "extended_output.log"
+analyze_log_file "$PARADEX_LOG_FILE"
+analyze_log_file "$GRVT_LOG_FILE"
+analyze_log_file "$EXTENDED_LOG_FILE"
 
 # 检查回撤监控状态
 echo -e "\n${BOLD}${GREEN}=== 回撤监控状态 ===${NC}"
@@ -429,13 +429,13 @@ analyze_drawdown_status() {
     fi
 }
 
-analyze_drawdown_status "paradex_output.log"
-analyze_drawdown_status "grvt_output.log"
-analyze_drawdown_status "extended_output.log"
+analyze_drawdown_status "$PARADEX_LOG_FILE"
+analyze_drawdown_status "$GRVT_LOG_FILE"
+analyze_drawdown_status "$EXTENDED_LOG_FILE"
 
 # 显示最近的日志条目
 echo -e "\n${BOLD}${GREEN}=== 最近的日志条目 ===${NC}"
-for log_file in "paradex_output.log" "grvt_output.log" "extended_output.log"; do
+for log_file in "$PARADEX_LOG_FILE" "$GRVT_LOG_FILE" "$EXTENDED_LOG_FILE"; do
     if [ -f "$log_file" ]; then
         local exchange=$(echo "$log_file" | cut -d'_' -f1)
         echo -e "\n${PURPLE}📊 $exchange 最新日志 (最后 3 行):${NC}"
@@ -529,10 +529,10 @@ echo -e "${YELLOW}参数化检查 GRVT:${NC} ./scripts/check_bots.sh --grvt"
 echo -e "${YELLOW}参数化检查 Extended:${NC} ./scripts/check_bots.sh --extended"
 echo ""
 echo -e "${CYAN}=== 日志监控操作 ===${NC}"
-echo -e "${YELLOW}实时监控 Paradex:${NC} tail -f paradex_output.log"
+echo -e "${YELLOW}实时监控 Paradex:${NC} tail -f $PARADEX_LOG_FILE"
 echo -e "${YELLOW}实时监控 GRVT:${NC} tail -f $GRVT_LOG_FILE"
-echo -e "${YELLOW}实时监控 Extended:${NC} tail -f extended_output.log"
-echo -e "${YELLOW}同时监控所有日志:${NC} tail -f paradex_output.log $GRVT_LOG_FILE extended_output.log"
+echo -e "${YELLOW}实时监控 Extended:${NC} tail -f $EXTENDED_LOG_FILE"
+echo -e "${YELLOW}同时监控所有日志:${NC} tail -f $PARADEX_LOG_FILE $GRVT_LOG_FILE $EXTENDED_LOG_FILE"
 echo -e "${YELLOW}查看错误日志:${NC} grep -i error logs/*.log | tail -10"
 echo -e "${YELLOW}清理过期PID文件:${NC} rm -f .*.pid logs/.*.pid"
 

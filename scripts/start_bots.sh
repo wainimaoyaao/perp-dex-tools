@@ -133,7 +133,7 @@ fi
 
 # 显示日志文件信息
 echo -e "\n${GREEN}=== 日志文件 ===${NC}"
-for log_file in "paradex_output.log" "grvt_output.log" "extended_output.log" "lighter_output.log"; do
+for log_file in "$PARADEX_LOG_FILE" "$GRVT_LOG_FILE" "$EXTENDED_LOG_FILE" "$LIGHTER_LOG_FILE"; do
     if [ -f "$log_file" ]; then
         size=$(du -h "$log_file" | cut -f1)
         echo -e "${CYAN}$log_file (大小: $size)${NC}"
@@ -149,11 +149,11 @@ echo -e "  GRVT: ./scripts/start_grvt.sh"
 echo -e "  Extended: ./scripts/start_extended.sh"
 echo -e "  Lighter: ./scripts/start_lighter.sh"
 echo -e "${YELLOW}监控日志:${NC}"
-echo -e "  Paradex: tail -f paradex_output.log"
-echo -e "  GRVT: tail -f grvt_output.log"
-echo -e "  Extended: tail -f extended_output.log"
-echo -e "  Lighter: tail -f lighter_output.log"
-echo -e "  同时监控: tail -f paradex_output.log grvt_output.log extended_output.log lighter_output.log"
+echo -e "  Paradex: tail -f $PARADEX_LOG_FILE"
+echo -e "  GRVT: tail -f $GRVT_LOG_FILE"
+echo -e "  Extended: tail -f $EXTENDED_LOG_FILE"
+echo -e "  Lighter: tail -f $LIGHTER_LOG_FILE"
+echo -e "  同时监控: tail -f $PARADEX_LOG_FILE $GRVT_LOG_FILE $EXTENDED_LOG_FILE $LIGHTER_LOG_FILE"
 echo -e "${YELLOW}其他命令:${NC}"
 echo -e "  检查状态: ./scripts/check_bots.sh"
 echo -e "  停止所有: ./scripts/stop_bots.sh"

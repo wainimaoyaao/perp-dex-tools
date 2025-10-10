@@ -24,6 +24,9 @@ else
     exit 1
 fi
 
+# 设置停止脚本日志文件路径
+STOP_LOG_FILE="logs/stop_paradex.log"
+
 echo -e "${RED}${BOLD}=== Paradex 交易机器人停止脚本 ===${NC}"
 echo -e "${CYAN}停止时间: $(date '+%Y-%m-%d %H:%M:%S')${NC}"
 
@@ -49,7 +52,7 @@ log_action() {
     esac
     
     # 记录到日志文件
-    echo "[$timestamp] [$level] $message" >> stop_paradex.log
+    echo "[$timestamp] [$level] $message" >> "$STOP_LOG_FILE"
 }
 
 # 检查 Paradex 机器人进程

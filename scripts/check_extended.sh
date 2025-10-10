@@ -78,8 +78,8 @@ else
 fi
 
 # 检查 PID 文件
-if [ -f ".extended_pid" ]; then
-    PID_FILE_CONTENT=$(cat .extended_pid)
+if [ -f "$EXTENDED_PID_FILE" ]; then
+    PID_FILE_CONTENT=$(cat "$EXTENDED_PID_FILE")
     if ps -p "$PID_FILE_CONTENT" > /dev/null 2>&1; then
         log_success "PID 文件有效: $PID_FILE_CONTENT"
     else

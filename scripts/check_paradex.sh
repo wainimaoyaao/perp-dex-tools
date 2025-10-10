@@ -166,14 +166,14 @@ fi
 
 # 检查 Paradex PID 文件
 echo -e "\n${BOLD}${GREEN}=== Paradex PID 文件状态 ===${NC}"
-if [ -f ".paradex_pid" ]; then
-    pid=$(cat .paradex_pid 2>/dev/null)
+if [ -f "$PARADEX_PID_FILE" ]; then
+    pid=$(cat "$PARADEX_PID_FILE" 2>/dev/null)
     if [ -n "$pid" ] && ps -p "$pid" > /dev/null 2>&1; then
         log_success "Paradex PID 文件有效 (PID: $pid)"
         check_process_details "$pid"
     else
         log_issue "warning" "Paradex PID 文件存在但进程不在运行 (PID: $pid)"
-        echo -e "${YELLOW}   建议删除过期的 PID 文件: rm .paradex_pid${NC}"
+        echo -e "${YELLOW}   建议删除过期的 PID 文件: rm $PARADEX_PID_FILE${NC}"
     fi
 else
     log_issue "info" "Paradex PID 文件不存在"
@@ -296,7 +296,7 @@ echo -e "${YELLOW}停止 Paradex:${NC} ./scripts/stop_paradex.sh"
 echo -e "${YELLOW}重新检查 Paradex:${NC} ./scripts/check_paradex.sh"
 echo -e "${YELLOW}实时监控日志:${NC} tail -f $PARADEX_LOG_FILE"
 echo -e "${YELLOW}查看错误日志:${NC} grep -i error $PARADEX_LOG_FILE | tail -10"
-echo -e "${YELLOW}清理 PID 文件:${NC} rm -f .paradex_pid"
+echo -e "${YELLOW}清理 PID 文件:${NC} rm -f $PARADEX_PID_FILE"
 echo -e "${YELLOW}编辑配置:${NC} nano scripts/bot_configs.sh"
 
 echo -e "\n${BLUE}Paradex 检查完成时间: $(date)${NC}"

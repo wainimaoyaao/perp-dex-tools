@@ -161,7 +161,7 @@ echo -e "${CYAN}Extended PID: $EXTENDED_PID${NC}"
 sleep 3
 if ps -p $EXTENDED_PID > /dev/null 2>&1; then
     echo -e "${GREEN}✅ Extended 机器人启动成功${NC}"
-    echo "$EXTENDED_PID" > ".extended_pid"
+    echo "$EXTENDED_PID" > "$EXTENDED_PID_FILE"
     
     # 检查日志中的初始化状态
     if [ -f "$EXTENDED_LOG_FILE" ]; then

@@ -49,7 +49,7 @@ log_action() {
     esac
     
     # 记录到日志文件
-    echo "[$timestamp] [$level] $message" >> stop_grvt.log
+    echo "[$timestamp] [$level] $message" >> logs/stop_grvt.log
 }
 
 # 检查 GRVT 机器人进程

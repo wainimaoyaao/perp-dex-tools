@@ -314,11 +314,11 @@ cleanup_pid_file() {
 echo -e "\n${BLUE}${BOLD}=== 第一阶段：从PID文件停止机器人 ===${NC}"
 
 # 从PID文件停止Paradex机器人
-if cleanup_pid_file ".paradex_pid" "Paradex 机器人"; then
-    PARADEX_PID=$(cat .paradex_pid)
-    if graceful_stop "$PARADEX_PID" "Paradex 机器人" "paradex_output.log"; then
-        rm -f .paradex_pid
-        log_action "SUCCESS" "已清理 .paradex_pid 文件"
+if cleanup_pid_file "$PARADEX_PID_FILE" "Paradex 机器人"; then
+    PARADEX_PID=$(cat "$PARADEX_PID_FILE")
+    if graceful_stop "$PARADEX_PID" "Paradex 机器人" "$PARADEX_LOG_FILE"; then
+        rm -f "$PARADEX_PID_FILE"
+        log_action "SUCCESS" "已清理 $PARADEX_PID_FILE 文件"
     fi
 else
     log_action "INFO" "未发现有效的 Paradex PID 文件"
@@ -336,11 +336,11 @@ else
 fi
 
 # 从PID文件停止Extended机器人
-if cleanup_pid_file ".extended_pid" "Extended 机器人"; then
-    EXTENDED_PID=$(cat .extended_pid)
-    if graceful_stop "$EXTENDED_PID" "Extended 机器人" "extended_output.log"; then
-        rm -f .extended_pid
-        log_action "SUCCESS" "已清理 .extended_pid 文件"
+if cleanup_pid_file "$EXTENDED_PID_FILE" "Extended 机器人"; then
+    EXTENDED_PID=$(cat "$EXTENDED_PID_FILE")
+    if graceful_stop "$EXTENDED_PID" "Extended 机器人" "$EXTENDED_LOG_FILE"; then
+        rm -f "$EXTENDED_PID_FILE"
+        log_action "SUCCESS" "已清理 $EXTENDED_PID_FILE 文件"
     fi
 else
     log_action "INFO" "未发现有效的 Extended PID 文件"
@@ -370,10 +370,10 @@ else
             # 确定机器人类型
             if [[ "$CMDLINE" == *"paradex"* ]]; then
                 log_action "INFO" "识别为 Paradex 机器人: $CMDLINE"
-                graceful_stop "$PID" "Paradex 机器人" "paradex_output.log"
+                graceful_stop "$PID" "Paradex 机器人" "$PARADEX_LOG_FILE"
             elif [[ "$CMDLINE" == *"grvt"* ]]; then
                 log_action "INFO" "识别为 GRVT 机器人: $CMDLINE"
-                graceful_stop "$PID" "GRVT 机器人" "grvt_output.log"
+                graceful_stop "$PID" "GRVT 机器人" "$GRVT_LOG_FILE"
             else
                 log_action "INFO" "识别为未知类型交易机器人: $CMDLINE"
                 graceful_stop "$PID" "交易机器人" ""
@@ -408,7 +408,7 @@ check_remaining_processes() {
 show_log_info() {
     echo -e "\n${BLUE}${BOLD}=== 日志文件信息 ===${NC}"
     
-    for log_file in "paradex_output.log" "grvt_output.log"; do
+    for log_file in "$PARADEX_LOG_FILE" "$GRVT_LOG_FILE"; do
         if [ -f "$log_file" ]; then
             local size=$(du -h "$log_file" | cut -f1)
             local lines=$(wc -l < "$log_file" 2>/dev/null || echo "0")
@@ -452,7 +452,7 @@ show_log_info
 
 # 清理陈旧的PID文件
 echo -e "\n${BLUE}${BOLD}=== 清理陈旧文件 ===${NC}"
-for pid_file in ".paradex_pid" "$GRVT_PID_FILE"; do
+for pid_file in "$PARADEX_PID_FILE" "$GRVT_PID_FILE" "$EXTENDED_PID_FILE"; do
     if [ -f "$pid_file" ]; then
         pid=$(cat "$pid_file" 2>/dev/null)
         if [ -n "$pid" ] && ! ps -p "$pid" > /dev/null 2>&1; then
@@ -486,7 +486,7 @@ echo -e "${CYAN}• 启动 Extended: ${NC}./scripts/start_extended.sh"
 echo -e "${CYAN}• 停止 Paradex: ${NC}./scripts/stop_paradex.sh"
 echo -e "${CYAN}• 停止 GRVT: ${NC}./scripts/stop_grvt.sh"
 echo -e "${CYAN}• 停止 Extended: ${NC}./scripts/stop_extended.sh"
-echo -e "${CYAN}• 查看实时日志: ${NC}tail -f paradex_output.log"
+echo -e "${CYAN}• 查看实时日志: ${NC}tail -f $PARADEX_LOG_FILE"
 echo -e "${CYAN}• 查看错误日志: ${NC}grep -i error *.log | tail -10"
 echo -e "${CYAN}• 清理所有日志: ${NC}rm -f *.log"
 
