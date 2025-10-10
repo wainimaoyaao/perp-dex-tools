@@ -393,7 +393,8 @@ class ExtendedClient(BaseExchangeClient):
                     price=rounded_price,
                     side=order_side,
                     time_in_force=TimeInForce.GTT,
-                    post_only=True  # Ensure MAKER orders
+                    post_only=True,  # Ensure MAKER orders
+                    expire_time = utc_now() + timedelta(days=90), # SDK 1 hour default
                 )
 
                 if not order_result or not order_result.data or order_result.status != 'OK':
@@ -430,7 +431,7 @@ class ExtendedClient(BaseExchangeClient):
                             status=order_info.status
                         )
                     elif order_info.status == 'REJECTED':
-                        return OrderResult(success=False, error_message=f'Close order rejected: {order_info.status_reason}')
+                        return OrderResult(success=False, error_message=f'Close order rejected: {order_info.status}')
                     else:
                         return OrderResult(success=False, error_message=f'Unexpected close order status: {order_info.status}')
                 else:

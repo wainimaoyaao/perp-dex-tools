@@ -315,7 +315,10 @@ class TradingBot:
                     current_order_status = self.exchange_client.open_orders[order_id].get('status', 'UNKNOWN')
                 else:
                     order_info = await self.exchange_client.get_order_info(order_id)
-                    current_order_status = order_info.status if order_info else 'UNKNOWN'
+                    if order_info is not None:
+                        current_order_status = order_info.status
+                    else:
+                        current_order_status = 'UNKNOWN' if order_info else 'UNKNOWN'
             else:
                 order_info = await self.exchange_client.get_order_info(order_id)
                 current_order_status = order_info.status
@@ -337,7 +340,10 @@ class TradingBot:
                         current_order_status = order_info.status if order_info else 'UNKNOWN'
                 else:
                     order_info = await self.exchange_client.get_order_info(order_id)
-                    current_order_status = order_info.status
+                    if order_info is not None:
+                        current_order_status = order_info.status
+                    else:
+                        current_order_status = 'UNKNOWN'
                 new_order_price = await self.exchange_client.get_order_price(self.config.direction)
 
             self.order_canceled_event.clear()
