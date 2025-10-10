@@ -75,7 +75,7 @@ rotate_log_if_needed() {
     ensure_logs_directory
     
     # 完整的日志文件路径
-    local full_log_path="logs/$log_file"
+    local full_log_path="$log_file"
     
     if [ -f "$full_log_path" ]; then
         local current_size_mb=$(get_file_size_mb "$full_log_path")
@@ -146,7 +146,7 @@ cleanup_logs_on_start() {
     local exchange_name="$2"
     
     if [ "$LOG_CLEANUP_ON_START" = "true" ]; then
-        local full_log_path="logs/$log_file"
+        local full_log_path="$log_file"
         if [ -f "$full_log_path" ]; then
             echo -e "${YELLOW}🧹 启动时清理 ${exchange_name} 日志文件${NC}"
             rm -f "$full_log_path"
@@ -174,7 +174,7 @@ prepare_log_file() {
     cleanup_old_logs "$log_prefix" "$exchange_name"
     
     # 确保日志文件存在
-    local full_log_path="logs/$log_file"
+    local full_log_path="$log_file"
     if [ ! -f "$full_log_path" ]; then
         touch "$full_log_path"
     fi
@@ -201,8 +201,8 @@ analyze_log_rotation_status() {
     local full_log_path=""
     if [ -f "$log_file" ]; then
         full_log_path="$log_file"
-    elif [ -f "logs/$log_file" ]; then
-        full_log_path="logs/$log_file"
+    elif [ -f "$log_file" ]; then
+        full_log_path="$log_file"
     else
         full_log_path="$log_file"  # 默认使用传入的路径
     fi
@@ -269,8 +269,8 @@ manual_rotate_log() {
     local source_file=""
     if [ -f "$log_file" ]; then
         source_file="$log_file"
-    elif [ -f "logs/$log_file" ]; then
-        source_file="logs/$log_file"
+    elif [ -f "$log_file" ]; then
+        source_file="$log_file"
     else
         echo -e "${RED}✗ 日志文件不存在: $log_file${NC}"
         return 1
@@ -317,7 +317,7 @@ show_all_logs_overview() {
     for exchange_info in "${exchanges[@]}"; do
         local exchange_name="${exchange_info%%:*}"
         local log_file="${exchange_info##*:}"
-        local full_log_path="logs/$log_file"
+        local full_log_path="$log_file"
         
         if [ -f "$full_log_path" ]; then
             local size_mb=$(get_file_size_mb "$full_log_path")
