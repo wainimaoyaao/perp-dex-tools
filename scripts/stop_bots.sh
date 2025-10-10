@@ -12,6 +12,14 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
+# 加载配置文件
+if [ -f "./scripts/bot_configs.sh" ]; then
+    source ./scripts/bot_configs.sh
+else
+    echo -e "${RED}错误: 配置文件 bot_configs.sh 不存在${NC}"
+    exit 1
+fi
+
 # 全局变量
 STOPPED_BOTS=0
 FAILED_STOPS=0
@@ -317,11 +325,11 @@ else
 fi
 
 # 从PID文件停止GRVT机器人
-if cleanup_pid_file ".grvt_pid" "GRVT 机器人"; then
-    GRVT_PID=$(cat .grvt_pid)
-    if graceful_stop "$GRVT_PID" "GRVT 机器人" "grvt_output.log"; then
-        rm -f .grvt_pid
-        log_action "SUCCESS" "已清理 .grvt_pid 文件"
+if cleanup_pid_file "$GRVT_PID_FILE" "GRVT 机器人"; then
+    GRVT_PID=$(cat "$GRVT_PID_FILE")
+    if graceful_stop "$GRVT_PID" "GRVT 机器人" "$GRVT_LOG_FILE"; then
+        rm -f "$GRVT_PID_FILE"
+        log_action "SUCCESS" "已清理 $GRVT_PID_FILE 文件"
     fi
 else
     log_action "INFO" "未发现有效的 GRVT PID 文件"
@@ -444,7 +452,7 @@ show_log_info
 
 # 清理陈旧的PID文件
 echo -e "\n${BLUE}${BOLD}=== 清理陈旧文件 ===${NC}"
-for pid_file in ".paradex_pid" ".grvt_pid"; do
+for pid_file in ".paradex_pid" "$GRVT_PID_FILE"; do
     if [ -f "$pid_file" ]; then
         pid=$(cat "$pid_file" 2>/dev/null)
         if [ -n "$pid" ] && ! ps -p "$pid" > /dev/null 2>&1; then

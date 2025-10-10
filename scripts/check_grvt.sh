@@ -166,14 +166,14 @@ fi
 
 # 检查 GRVT PID 文件
 echo -e "\n${BOLD}${GREEN}=== GRVT PID 文件状态 ===${NC}"
-if [ -f ".grvt_pid" ]; then
-    pid=$(cat .grvt_pid 2>/dev/null)
+if [ -f "$GRVT_PID_FILE" ]; then
+    pid=$(cat "$GRVT_PID_FILE" 2>/dev/null)
     if [ -n "$pid" ] && ps -p "$pid" > /dev/null 2>&1; then
         log_success "GRVT PID 文件有效 (PID: $pid)"
         check_process_details "$pid"
     else
         log_issue "warning" "GRVT PID 文件存在但进程不在运行 (PID: $pid)"
-        echo -e "${YELLOW}   建议删除过期的 PID 文件: rm .grvt_pid${NC}"
+        echo -e "${YELLOW}   建议删除过期的 PID 文件: rm $GRVT_PID_FILE${NC}"
     fi
 else
     log_issue "info" "GRVT PID 文件不存在"
@@ -201,8 +201,8 @@ if [ -f "$GRVT_LOG_FILE" ]; then
     # 检查日志文件是否过大
     size_mb=$(du -m "$GRVT_LOG_FILE" | cut -f1)
     if [ -n "$size_mb" ]; then
-        local max_size=${LOG_MAX_SIZE_MB:-50}
-        if [ "$size_mb" -gt $max_size ]; then
+        max_size=${LOG_MAX_SIZE_MB:-50}
+        if [ "$size_mb" -gt "$max_size" ]; then
             if [ "$LOG_ROTATION_ENABLED" = "true" ]; then
                 log_issue "warning" "日志文件大小 (${size_mb}MB) 超过配置的最大值 (${max_size}MB)，将在下次启动时轮转"
             else
@@ -295,7 +295,7 @@ echo -e "${YELLOW}停止 GRVT:${NC} ./scripts/stop_grvt.sh"
 echo -e "${YELLOW}重新检查 GRVT:${NC} ./scripts/check_grvt.sh"
 echo -e "${YELLOW}实时监控日志:${NC} tail -f $GRVT_LOG_FILE"
 echo -e "${YELLOW}查看错误日志:${NC} grep -i error $GRVT_LOG_FILE | tail -10"
-echo -e "${YELLOW}清理 PID 文件:${NC} rm -f .grvt_pid"
+echo -e "${YELLOW}清理 PID 文件:${NC} rm -f $GRVT_PID_FILE"
 echo -e "${YELLOW}编辑配置:${NC} nano scripts/bot_configs.sh"
 
 echo -e "\n${BLUE}GRVT 检查完成时间: $(date)${NC}"

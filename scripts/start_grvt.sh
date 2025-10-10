@@ -156,7 +156,7 @@ echo -e "${CYAN}GRVT PID: $GRVT_PID${NC}"
 sleep 3
 if ps -p $GRVT_PID > /dev/null 2>&1; then
     echo -e "${GREEN}✅ GRVT 机器人启动成功${NC}"
-    echo "$GRVT_PID" > ".grvt_pid"
+    echo "$GRVT_PID" > "$GRVT_PID_FILE"
     
     # 检查日志中的初始化状态
     if [ -f "$GRVT_LOG_FILE" ]; then

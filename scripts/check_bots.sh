@@ -285,7 +285,7 @@ check_pid_file() {
 }
 
 check_pid_file "Paradex" ".paradex_pid"
-check_pid_file "GRVT" ".grvt_pid"
+check_pid_file "GRVT" "$GRVT_PID_FILE"
 check_pid_file "Extended" ".extended_pid"
 
 # 检查日志文件
@@ -530,11 +530,11 @@ echo -e "${YELLOW}参数化检查 Extended:${NC} ./scripts/check_bots.sh --exten
 echo ""
 echo -e "${CYAN}=== 日志监控操作 ===${NC}"
 echo -e "${YELLOW}实时监控 Paradex:${NC} tail -f paradex_output.log"
-echo -e "${YELLOW}实时监控 GRVT:${NC} tail -f grvt_output.log"
+echo -e "${YELLOW}实时监控 GRVT:${NC} tail -f $GRVT_LOG_FILE"
 echo -e "${YELLOW}实时监控 Extended:${NC} tail -f extended_output.log"
-echo -e "${YELLOW}同时监控所有日志:${NC} tail -f paradex_output.log grvt_output.log extended_output.log"
-echo -e "${YELLOW}查看错误日志:${NC} grep -i error *.log | tail -10"
-echo -e "${YELLOW}清理过期PID文件:${NC} rm -f .*.pid"
+echo -e "${YELLOW}同时监控所有日志:${NC} tail -f paradex_output.log $GRVT_LOG_FILE extended_output.log"
+echo -e "${YELLOW}查看错误日志:${NC} grep -i error logs/*.log | tail -10"
+echo -e "${YELLOW}清理过期PID文件:${NC} rm -f .*.pid logs/.*.pid"
 
 echo -e "\n${BLUE}检查完成时间: $(date)${NC}"
 echo -e "${GREEN}状态检查完成!${NC}"
