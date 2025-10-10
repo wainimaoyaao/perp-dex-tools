@@ -69,39 +69,48 @@ show_header() {
     echo ""
 }
 
+# 函数：检查进程详细信息
+check_process_details() {
+    local pid=$1
+    
+    if [ -z "$pid" ] || ! ps -p "$pid" > /dev/null 2>&1; then
+        return 1
+    fi
+    
+    # 获取进程信息
+    local cpu_usage=$(ps -p "$pid" -o %cpu --no-headers | tr -d ' ')
+    local mem_usage=$(ps -p "$pid" -o %mem --no-headers | tr -d ' ')
+    local start_time=$(ps -p "$pid" -o lstart --no-headers)
+    local runtime=$(ps -p "$pid" -o etime --no-headers | tr -d ' ')
+    
+    echo -e "${CYAN}   CPU: ${cpu_usage}%, 内存: ${mem_usage}%${NC}"
+    echo -e "${CYAN}   运行时间: $runtime${NC}"
+    echo -e "${CYAN}   启动时间: $start_time${NC}"
+    
+    return 0
+}
+
 # 函数：检查进程状态
 check_process_status() {
     echo -e "${PURPLE}${BOLD}=== 进程状态检查 ===${NC}"
     
-    # 检查通过命令行参数识别的进程
-    local pids=$(pgrep -f "trading_bot.py.*lighter")
+    # 使用与paradex相同的方法检查进程
+    LIGHTER_PROCESSES=$(ps aux | grep runbot.py | grep lighter | grep -v grep || true)
     
-    if [ ! -z "$pids" ]; then
-        log_success "Lighter 机器人进程正在运行"
-        echo -e "${CYAN}进程 PID: $pids${NC}"
-        
-        # 显示进程详细信息
-        for pid in $pids; do
-            if [ -f "/proc/$pid/cmdline" ]; then
-                local cmdline=$(cat /proc/$pid/cmdline | tr '\0' ' ')
-                echo -e "${CYAN}命令行: $cmdline${NC}"
-            fi
-            
-            # 显示进程运行时间
-            local start_time=$(ps -o lstart= -p $pid 2>/dev/null)
-            if [ ! -z "$start_time" ]; then
-                echo -e "${CYAN}启动时间: $start_time${NC}"
-            fi
-            
-            # 显示内存使用
-            local memory=$(ps -o rss= -p $pid 2>/dev/null)
-            if [ ! -z "$memory" ]; then
-                local memory_mb=$((memory / 1024))
-                echo -e "${CYAN}内存使用: ${memory_mb}MB${NC}"
-            fi
-        done
+    if [ -z "$LIGHTER_PROCESSES" ]; then
+        log_issue "critical" "Lighter 交易机器人未在运行"
     else
-        log_issue "critical" "未找到运行中的 Lighter 机器人进程"
+        bot_count=$(echo "$LIGHTER_PROCESSES" | wc -l || echo "0")
+        log_success "发现 $bot_count 个运行中的 Lighter 机器人"
+        
+        echo "$LIGHTER_PROCESSES" | while read -r line; do
+            PID=$(echo "$line" | awk '{print $2}')
+            CMD=$(echo "$line" | awk '{for(i=11;i<=NF;i++) printf "%s ", $i; print ""}')
+            
+            echo -e "${CYAN}   🔹 Lighter (PID: $PID)${NC}"
+            check_process_details "$PID"
+            echo ""
+        done
     fi
     
     # 检查PID文件
@@ -117,6 +126,7 @@ check_process_status() {
     fi
     
     echo ""
+    return 0
 }
 
 # 函数：检查配置文件
@@ -322,9 +332,11 @@ show_summary() {
 quick_check() {
     echo -e "${CYAN}快速检查模式${NC}"
     
-    local pids=$(pgrep -f "trading_bot.py.*lighter")
-    if [ ! -z "$pids" ]; then
-        echo -e "${GREEN}✅ Lighter 机器人正在运行 (PID: $pids)${NC}"
+    # 使用与主检查相同的方法
+    LIGHTER_PROCESSES=$(ps aux | grep runbot.py | grep lighter | grep -v grep || true)
+    if [ ! -z "$LIGHTER_PROCESSES" ]; then
+        bot_count=$(echo "$LIGHTER_PROCESSES" | wc -l || echo "0")
+        echo -e "${GREEN}✅ Lighter 机器人正在运行 ($bot_count 个进程)${NC}"
         
         # 检查最近日志
         local log_file="logs/$LIGHTER_LOG_FILE"

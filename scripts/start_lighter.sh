@@ -64,7 +64,12 @@ check_env_file() {
 
 # 函数：检查进程是否已运行
 check_existing_process() {
-    local pids=$(pgrep -f "trading_bot.py.*lighter")
+    # 使用与paradex相同的方法，更可靠地查找进程
+    local processes=$(ps aux | grep runbot.py | grep lighter | grep -v grep || true)
+    local pids=""
+    if [ ! -z "$processes" ]; then
+        pids=$(echo "$processes" | awk '{print $2}' | tr '\n' ' ')
+    fi
     if [ ! -z "$pids" ]; then
         echo -e "${YELLOW}⚠️  发现已运行的 Lighter 机器人进程:${NC}"
         echo -e "${YELLOW}PID: $pids${NC}"

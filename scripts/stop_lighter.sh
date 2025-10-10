@@ -56,8 +56,11 @@ log_action() {
 
 # 函数：查找 Lighter 机器人进程
 find_lighter_processes() {
-    local pids=$(pgrep -f "trading_bot.py.*lighter")
-    echo "$pids"
+    # 使用与paradex相同的方法，更可靠地查找进程
+    local processes=$(ps aux | grep runbot.py | grep lighter | grep -v grep || true)
+    if [ ! -z "$processes" ]; then
+        echo "$processes" | awk '{print $2}' | tr '\n' ' '
+    fi
 }
 
 # 函数：从PID文件获取进程ID
