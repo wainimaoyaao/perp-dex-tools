@@ -179,7 +179,7 @@ check_configuration() {
 check_logs() {
     echo -e "${PURPLE}${BOLD}=== 日志检查 ===${NC}"
     
-    local log_file="logs/$LIGHTER_LOG_FILE"
+    local log_file="$LIGHTER_LOG_FILE"
     
     # 检查日志轮转状态（如果log_utils.sh可用）
     if command -v analyze_log_rotation_status >/dev/null 2>&1; then
@@ -321,7 +321,7 @@ show_summary() {
     
     echo ""
     echo -e "${CYAN}常用命令:${NC}"
-    echo -e "${BLUE}  查看实时日志: tail -f logs/$LIGHTER_LOG_FILE${NC}"
+    echo -e "${BLUE}  查看实时日志: tail -f $LIGHTER_LOG_FILE${NC}"
     echo -e "${BLUE}  启动机器人: ./scripts/start_lighter.sh${NC}"
     echo -e "${BLUE}  停止机器人: ./scripts/stop_lighter.sh${NC}"
     echo -e "${BLUE}  查看所有机器人: ./scripts/check_bots.sh${NC}"
@@ -339,7 +339,7 @@ quick_check() {
         echo -e "${GREEN}✅ Lighter 机器人正在运行 ($bot_count 个进程)${NC}"
         
         # 检查最近日志
-        local log_file="logs/$LIGHTER_LOG_FILE"
+        local log_file="$LIGHTER_LOG_FILE"
         if [ -f "$log_file" ]; then
             local last_modified=$(stat -f%m "$log_file" 2>/dev/null || stat -c%Y "$log_file" 2>/dev/null)
             local current_time=$(date +%s)

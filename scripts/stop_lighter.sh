@@ -255,7 +255,7 @@ stop_all_processes() {
 
 # 函数：显示最后的日志
 show_final_logs() {
-    local log_file="logs/$LIGHTER_LOG_FILE"
+    local log_file="$LIGHTER_LOG_FILE"
     
     if [ -f "$log_file" ]; then
         echo -e "${CYAN}=== 最后的日志记录 (最后10行) ===${NC}"
@@ -276,7 +276,7 @@ show_post_stop_info() {
     echo -e "${CYAN}常用命令:${NC}"
     echo -e "${BLUE}  检查机器人状态: ./scripts/check_lighter.sh${NC}"
     echo -e "${BLUE}  启动机器人: ./scripts/start_lighter.sh${NC}"
-    echo -e "${BLUE}  查看日志: tail -f logs/$LIGHTER_LOG_FILE${NC}"
+    echo -e "${BLUE}  查看日志: tail -f $LIGHTER_LOG_FILE${NC}"
     echo -e "${BLUE}  查看所有机器人: ./scripts/check_bots.sh${NC}"
     echo ""
     echo -e "${YELLOW}注意: 停止机器人可能会影响正在进行的交易${NC}"

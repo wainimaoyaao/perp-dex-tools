@@ -100,7 +100,7 @@ show_startup_params() {
     echo -e "${BLUE}止损价格: $LIGHTER_STOP_PRICE${NC}"
     echo -e "${BLUE}暂停价格: $LIGHTER_PAUSE_PRICE${NC}"
     echo -e "${BLUE}Aster 加速: $LIGHTER_ASTER_BOOST${NC}"
-    echo -e "${BLUE}日志文件: logs/$LIGHTER_LOG_FILE${NC}"
+    echo -e "${BLUE}日志文件: $LIGHTER_LOG_FILE${NC}"
     echo -e "${BLUE}回撤监控: $LIGHTER_ENABLE_DRAWDOWN_MONITOR${NC}"
     if [ "$LIGHTER_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
         echo -e "${BLUE}  - 轻度回撤阈值: $LIGHTER_DRAWDOWN_LIGHT_THRESHOLD%${NC}"
@@ -143,16 +143,16 @@ start_bot() {
     # 启动机器人并重定向输出到日志文件
     redirect_symbol=$(get_log_redirect)
     echo -e "${CYAN}执行命令: $cmd${NC}"
-    echo -e "${CYAN}日志输出: logs/$LIGHTER_LOG_FILE (模式: ${redirect_symbol})${NC}"
+    echo -e "${CYAN}日志输出: $LIGHTER_LOG_FILE (模式: ${redirect_symbol})${NC}"
     
     # 在日志文件中添加启动标记
-    echo "=== $(date '+%Y-%m-%d %H:%M:%S') - Lighter Bot Starting (PID: $$) ===" $redirect_symbol "logs/$LIGHTER_LOG_FILE"
+    echo "=== $(date '+%Y-%m-%d %H:%M:%S') - Lighter Bot Starting (PID: $$) ===" $redirect_symbol "$LIGHTER_LOG_FILE"
     
     # 根据重定向模式执行命令
-    if [ "$redirect_symbol" = ">>" ]; then
-        nohup $cmd >> "logs/$LIGHTER_LOG_FILE" 2>&1 &
+    if [ "$LIGHTER_LOG_APPEND" = "true" ]; then
+        nohup $cmd >> "$LIGHTER_LOG_FILE" 2>&1 &
     else
-        nohup $cmd > "logs/$LIGHTER_LOG_FILE" 2>&1 &
+        nohup $cmd > "$LIGHTER_LOG_FILE" 2>&1 &
     fi
     bot_pid=$!
     
@@ -163,7 +163,7 @@ start_bot() {
     if kill -0 $bot_pid 2>/dev/null; then
         echo -e "${GREEN}✅ Lighter 机器人启动成功!${NC}"
         echo -e "${GREEN}进程 PID: $bot_pid${NC}"
-        echo -e "${CYAN}查看日志: tail -f logs/$LIGHTER_LOG_FILE${NC}"
+        echo -e "${CYAN}查看日志: tail -f $LIGHTER_LOG_FILE${NC}"
         echo -e "${CYAN}检查状态: ./scripts/check_lighter.sh${NC}"
         echo -e "${CYAN}停止机器人: ./scripts/stop_lighter.sh${NC}"
         
@@ -172,7 +172,7 @@ start_bot() {
         echo -e "${CYAN}PID 已保存到: logs/lighter_bot.pid${NC}"
     else
         echo -e "${RED}❌ Lighter 机器人启动失败!${NC}"
-        echo -e "${YELLOW}请检查日志文件: logs/$LIGHTER_LOG_FILE${NC}"
+        echo -e "${YELLOW}请检查日志文件: $LIGHTER_LOG_FILE${NC}"
         exit 1
     fi
 }
@@ -182,7 +182,7 @@ show_post_startup_info() {
     echo ""
     echo -e "${GREEN}=== Lighter 机器人启动完成 ===${NC}"
     echo -e "${CYAN}常用命令:${NC}"
-    echo -e "${BLUE}  查看实时日志: tail -f logs/$LIGHTER_LOG_FILE${NC}"
+    echo -e "${BLUE}  查看实时日志: tail -f $LIGHTER_LOG_FILE${NC}"
     echo -e "${BLUE}  检查机器人状态: ./scripts/check_lighter.sh${NC}"
     echo -e "${BLUE}  停止机器人: ./scripts/stop_lighter.sh${NC}"
     echo -e "${BLUE}  查看所有机器人: ./scripts/check_bots.sh${NC}"
