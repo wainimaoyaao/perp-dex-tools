@@ -14,7 +14,15 @@ from exchanges import ExchangeFactory
 from helpers import TradingLogger
 from helpers.lark_bot import LarkBot
 from helpers.telegram_bot import TelegramBot
-from helpers.drawdown_monitor import DrawdownMonitor, DrawdownConfig
+from helpers.drawdown_monitor import (
+    DrawdownMonitor, 
+    DrawdownLevel,
+    DrawdownConfig,
+    NetworthValidationError,
+    StopLossExecutionError,
+    APIRateLimitError,
+    NetworkConnectionError
+)
 
 
 @dataclass
@@ -111,6 +119,12 @@ class TradingBot:
                     self.exchange_client, 
                     config.contract_id
                 )
+                
+                # 注册回调函数以增强集成
+                self.drawdown_monitor.set_warning_callback(DrawdownLevel.LIGHT_WARNING, self._on_light_drawdown_warning)
+                self.drawdown_monitor.set_warning_callback(DrawdownLevel.MEDIUM_WARNING, self._on_medium_drawdown_warning)
+                self.drawdown_monitor.set_warning_callback(DrawdownLevel.SEVERE_STOP_LOSS, self._on_severe_drawdown_warning)
+                self.drawdown_monitor.set_stop_loss_callback(self._on_stop_loss_triggered)
                 self.logger.log(f"Drawdown monitor enabled with automatic stop-loss. Thresholds: "
                               f"Light={config.drawdown_light_threshold}%, "
                               f"Medium={config.drawdown_medium_threshold}%, "
@@ -566,6 +580,44 @@ class TradingBot:
         if telegram_token and telegram_chat_id:
             with TelegramBot(telegram_token, telegram_chat_id) as tg_bot:
                 tg_bot.send_text(message)
+    
+    # Drawdown monitor callback functions
+    async def _on_light_drawdown_warning(self, current_drawdown: float, peak_networth: float, current_networth: float):
+        """Callback for light drawdown warning."""
+        message = f"⚠️ Light Drawdown Warning\n"
+        message += f"Current Drawdown: {current_drawdown:.2%}\n"
+        message += f"Peak Net Worth: ${peak_networth:,.2f}\n"
+        message += f"Current Net Worth: ${current_networth:,.2f}"
+        await self.send_notification(message)
+    
+    async def _on_medium_drawdown_warning(self, current_drawdown: float, peak_networth: float, current_networth: float):
+        """Callback for medium drawdown warning."""
+        self.trading_paused = True
+        message = f"🟡 Medium Drawdown Warning - Trading Paused\n"
+        message += f"Current Drawdown: {current_drawdown:.2%}\n"
+        message += f"Peak Net Worth: ${peak_networth:,.2f}\n"
+        message += f"Current Net Worth: ${current_networth:,.2f}\n"
+        message += f"New orders are paused until drawdown reduces."
+        await self.send_notification(message)
+    
+    async def _on_severe_drawdown_warning(self, current_drawdown: float, peak_networth: float, current_networth: float):
+        """Callback for severe drawdown warning."""
+        message = f"🔴 Severe Drawdown Warning - Stop Loss Imminent\n"
+        message += f"Current Drawdown: {current_drawdown:.2%}\n"
+        message += f"Peak Net Worth: ${peak_networth:,.2f}\n"
+        message += f"Current Net Worth: ${current_networth:,.2f}\n"
+        message += f"Automatic stop-loss will be triggered."
+        await self.send_notification(message)
+    
+    async def _on_stop_loss_triggered(self, current_drawdown: float, peak_networth: float, current_networth: float, loss_amount: float):
+        """Callback for stop-loss trigger."""
+        message = f"🚨 STOP LOSS TRIGGERED\n"
+        message += f"Current Drawdown: {current_drawdown:.2%}\n"
+        message += f"Peak Net Worth: ${peak_networth:,.2f}\n"
+        message += f"Current Net Worth: ${current_networth:,.2f}\n"
+        message += f"Loss Amount: ${loss_amount:,.2f}\n"
+        message += f"Automatic position closure initiated."
+        await self.send_notification(message)
 
 
 
@@ -599,6 +651,12 @@ class TradingBot:
 
             # Capture the running event loop for thread-safe callbacks
             self.loop = asyncio.get_running_loop()
+            # Ensure drawdown monitor has the updated contract_id for stop-loss
+            if self.drawdown_monitor is not None:
+                try:
+                    self.drawdown_monitor.contract_id = self.config.contract_id
+                except Exception as e:
+                    self.logger.log(f"Failed to update DrawdownMonitor contract_id: {e}", "WARNING")
             # Connect to exchange
             await self.exchange_client.connect()
 
@@ -653,6 +711,20 @@ class TradingBot:
                                 while not stop_loss_success and retry_count < max_retries and not self.shutdown_requested:
                                     try:
                                         retry_count += 1
+                                        
+                                        # 早期成功检测：如果持仓=0且无活跃订单，立即标记成功
+                                        try:
+                                            current_pos = await self.exchange_client.get_account_positions()
+                                            active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
+                                            
+                                            if abs(current_pos) <= 0.001 and not active_orders:
+                                                self.logger.log(f"Early success detection: Position={current_pos}, Active orders={len(active_orders) if active_orders else 0}", "INFO")
+                                                self.logger.log("Stop-loss already completed - position closed and no active orders", "INFO")
+                                                stop_loss_success = True
+                                                self.drawdown_monitor.stop_loss_executed = True
+                                                break
+                                        except Exception as early_check_e:
+                                            self.logger.log(f"Early success check failed: {early_check_e}", "WARNING")
                                         
                                         # 进入紧急模式提醒
                                         if retry_count == emergency_threshold:
@@ -711,6 +783,9 @@ class TradingBot:
                                             wait_time = min(retry_count * 0.5, 5.0)  # 最多等待5秒
                                             await asyncio.sleep(wait_time)
                                     
+                                    except StopLossExecutionError as retry_e:
+                                        self.logger.log(f"Stop-loss execution error during retry {retry_count}: {retry_e}", "ERROR")
+                                        await asyncio.sleep(1)
                                     except Exception as retry_e:
                                         self.logger.log(f"Error during stop-loss retry {retry_count}: {retry_e}", "ERROR")
                                         await asyncio.sleep(1)
@@ -812,8 +887,24 @@ class TradingBot:
                                 self.logger.log("Trading resumed - drawdown level back to normal", "INFO")
                                 continue  # 立即跳出循环以便快速恢复交易
                                 
+                    except (APIRateLimitError, NetworkConnectionError) as api_error:
+                        self.logger.log(f"API/Network error during networth update: {api_error}", "WARNING")
+                        # 使用缓存值进行更新
+                        should_continue = self.drawdown_monitor.update_networth_with_fallback(None)
+                        # 即使出现错误，也尝试使用缓存值继续监控
+                        try:
+                            if not should_continue or self.drawdown_monitor.is_stop_loss_triggered():
+                                self.logger.log("Stop-loss triggered during error recovery mode", "CRITICAL")
+                                await self.graceful_shutdown("Drawdown stop-loss triggered during error recovery")
+                                break
+                        except Exception as fallback_error:
+                            self.logger.log(f"Failed to use fallback monitoring: {fallback_error}", "ERROR")
+                    except NetworthValidationError as validation_error:
+                        self.logger.log(f"Networth validation error: {validation_error}", "ERROR")
+                        # 净值验证失败，跳过本次更新但继续监控
+                        continue
                     except Exception as networth_error:
-                        self.logger.log(f"Failed to get current net worth: {networth_error}", "WARNING")
+                        self.logger.log(f"Unexpected error during networth update: {networth_error}", "WARNING")
                         # 使用缓存值进行更新
                         should_continue = self.drawdown_monitor.update_networth_with_fallback(None)
                         # 即使出现错误，也尝试使用缓存值继续监控

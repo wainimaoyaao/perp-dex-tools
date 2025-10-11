@@ -66,6 +66,133 @@ class LighterClient(BaseExchangeClient):
         self._networth_cache_duration = 30  # Cache for 30 seconds to avoid rate limiting
         self._last_api_call_time = 0
         self._min_api_interval = 2  # Minimum 2 seconds between API calls
+        # Collateral-only cache
+        self._collateral_cache = None
+        self._collateral_cache_time = 0
+        # Cache last filled prices per market and side for avg_price fallback
+        self._last_fill_price_by_market = {}
+
+    def _extract_avg_price(self, position: Any) -> Optional[Decimal]:
+        """Extract average entry price from position with multiple fallbacks."""
+        candidate_fields = [
+            'avg_price', 'avgPrice', 'average_price', 'averagePrice',
+            'avg_entry_price', 'avgEntryPrice', 'entry_avg_price',
+            'entry_price', 'entryPrice', 'open_price', 'openPrice',
+            'price'
+        ]
+        for field in candidate_fields:
+            if hasattr(position, field):
+                try:
+                    value = getattr(position, field)
+                    if value is not None:
+                        price = Decimal(str(value))
+                        if price > 0:
+                            return price
+                except Exception:
+                    continue
+        return None
+
+    def _extract_market_id(self, position: Any) -> Optional[int]:
+        """Extract market identifier from a position using multiple field names."""
+        candidate_fields = [
+            'market_id', 'marketIndex', 'market_index', 'marketId', 'index', 'market'
+        ]
+        for field in candidate_fields:
+            if hasattr(position, field):
+                try:
+                    value = getattr(position, field)
+                    if value is not None:
+                        try:
+                            return int(value)
+                        except Exception:
+                            # Fallback via string cast
+                            return int(str(value))
+                except Exception:
+                    continue
+        return None
+
+    def _extract_position_size(self, position: Any) -> Decimal:
+        """Extract position size from a position using multiple field names."""
+        candidate_fields = [
+            'position', 'size', 'base_size', 'base_amount', 'quantity'
+        ]
+        for field in candidate_fields:
+            try:
+                value = getattr(position, field, None)
+                if value is not None:
+                    return Decimal(str(value))
+            except Exception:
+                continue
+        return Decimal('0')
+
+    def _extract_unrealized_pnl(self, position: Any) -> Optional[Decimal]:
+        """Extract unrealized PnL from position if provided by API."""
+        candidate_fields = [
+            'unrealized_pnl', 'unrealizedPnl', 'unrealizedPNL',
+            'pnl_unrealized', 'unrealized', 'uPnL', 'UPNL'
+        ]
+        for field in candidate_fields:
+            if hasattr(position, field):
+                try:
+                    value = getattr(position, field)
+                    if value is not None:
+                        return Decimal(str(value))
+                except Exception:
+                    continue
+        return None
+
+    async def _derive_avg_price_fallback(self, pos_size: Decimal) -> Optional[Decimal]:
+        """Derive average price using cached fills or inactive orders as fallback."""
+        try:
+            side = 'buy' if pos_size > 0 else 'sell'
+            market_id = self.config.contract_id
+            cached = None
+            try:
+                cached = self._last_fill_price_by_market.get(market_id, {}).get(side)
+            except Exception:
+                cached = None
+            if cached:
+                try:
+                    price = Decimal(str(cached))
+                    if price > 0:
+                        self.logger.log(f"Avg price fallback from cache: side={side}, price={price}", "DEBUG")
+                        return price
+                except Exception:
+                    pass
+
+            # Fetch last filled order price from inactive orders
+            try:
+                if self.lighter_client is None:
+                    await self._initialize_lighter_client()
+
+                auth_token, error = self.lighter_client.create_auth_token_with_expiry()
+                if error is not None:
+                    self.logger.log(f"Auth token error for inactive orders: {error}", "WARNING")
+                else:
+                    order_api = lighter.OrderApi(self.api_client)
+                    orders_response = await order_api.account_inactive_orders(
+                        account_index=self.account_index,
+                        market_id=market_id,
+                        auth=auth_token
+                    )
+                    orders = getattr(orders_response, 'orders', []) if orders_response else []
+                    for order in reversed(orders):
+                        try:
+                            order_side = 'sell' if getattr(order, 'is_ask', False) else 'buy'
+                            status = str(getattr(order, 'status', '')).upper()
+                            price_val = getattr(order, 'price', None)
+                            if order_side == side and status == 'FILLED' and price_val is not None:
+                                price = Decimal(str(price_val))
+                                if price > 0:
+                                    self.logger.log(f"Avg price fallback from inactive orders: side={side}, price={price}", "DEBUG")
+                                    return price
+                        except Exception:
+                            continue
+            except Exception as e:
+                self.logger.log(f"Inactive orders fallback error: {e}", "WARNING")
+        except Exception:
+            pass
+        return None
 
     def _validate_config(self) -> None:
         """Validate Lighter configuration."""
@@ -272,6 +399,17 @@ class LighterClient(BaseExchangeClient):
             if status in ['FILLED', 'CANCELED']:
                 self.logger.log_transaction(order_id, side, filled_size, price, status)
 
+            # Cache last filled price per market and side for avg_price fallback
+            try:
+                if status == 'FILLED' and filled_size > 0:
+                    market_id = order_data['market_index']
+                    if market_id not in self._last_fill_price_by_market:
+                        self._last_fill_price_by_market[market_id] = {}
+                    self._last_fill_price_by_market[market_id][side] = price
+                    self.logger.log(f"Cached last fill price: market={market_id}, side={side}, price={price}", "DEBUG")
+            except Exception:
+                pass
+
             # Call the order update handler for trading_bot.py
             if self._order_update_handler:
                 self._order_update_handler({
@@ -287,39 +425,158 @@ class LighterClient(BaseExchangeClient):
 
     @query_retry(default_return=(0, 0))
     async def fetch_bbo_prices(self, contract_id: str) -> Tuple[Decimal, Decimal]:
-        """Get orderbook using official SDK."""
-        # Use WebSocket data if available
-        if (hasattr(self, 'ws_manager') and
-                self.ws_manager.best_bid and self.ws_manager.best_ask):
-            best_bid = Decimal(str(self.ws_manager.best_bid))
-            best_ask = Decimal(str(self.ws_manager.best_ask))
+        """Get best bid/ask prices, prefer WebSocket with REST fallback."""
+        # Use WebSocket data if available and valid
+        if (hasattr(self, 'ws_manager') and self.ws_manager.best_bid and self.ws_manager.best_ask):
+            try:
+                best_bid = Decimal(str(self.ws_manager.best_bid))
+                best_ask = Decimal(str(self.ws_manager.best_ask))
+                if best_bid > 0 and best_ask > 0 and best_bid < best_ask:
+                    self.logger.log(f"WS BBO: bid={best_bid}, ask={best_ask}", "DEBUG")
+                    return best_bid, best_ask
+                else:
+                    self.logger.log("WebSocket bid/ask invalid, trying REST fallback", "WARNING")
+            except Exception:
+                self.logger.log("Failed to parse WebSocket bid/ask, trying REST fallback", "WARNING")
 
-            if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
-                self.logger.log("Invalid bid/ask prices", "ERROR")
-                raise ValueError("Invalid bid/ask prices")
-        else:
-            self.logger.log("Unable to get bid/ask prices from WebSocket.", "ERROR")
-            raise ValueError("WebSocket not running. No bid/ask prices available")
+        # REST fallback
+        try:
+            best_bid, best_ask = await self._fetch_bbo_prices_rest_fallback(contract_id)
+            if best_bid > 0 and best_ask > 0 and best_bid < best_ask:
+                self.logger.log(f"REST BBO: bid={best_bid}, ask={best_ask}", "DEBUG")
+                return best_bid, best_ask
+            else:
+                self.logger.log("REST fallback bid/ask invalid", "ERROR")
+                raise ValueError("Invalid bid/ask prices from REST fallback")
+        except Exception as e:
+            self.logger.log(f"Failed to fetch valid bid/ask: {e}", "ERROR")
+            raise
 
-        return best_bid, best_ask
+    async def _fetch_bbo_prices_rest_fallback(self, contract_id: str) -> Tuple[Decimal, Decimal]:
+        """Fetch best bid/ask via REST as a fallback."""
+        # Ensure API client is initialized
+        if self.api_client is None:
+            await self._initialize_lighter_client()
+
+        order_api = lighter.OrderApi(self.api_client)
+
+        # Prefer detailed order book endpoint
+        try:
+            details = await order_api.order_book_details(market_id=contract_id)
+            if details and hasattr(details, 'order_book_details') and len(details.order_book_details) > 0:
+                d = details.order_book_details[0]
+                best_bid = Decimal('0')
+                best_ask = Decimal('0')
+
+                # Try bids/asks lists
+                bids = getattr(d, 'bids', None)
+                asks = getattr(d, 'asks', None)
+                if isinstance(bids, list) and len(bids) > 0 and isinstance(asks, list) and len(asks) > 0:
+                    try:
+                        bid_entry = bids[0]
+                        ask_entry = asks[0]
+                        # Support dict or object entries
+                        bid_price = Decimal(str(bid_entry.get('price', bid_entry.get('p', 0)))) if isinstance(bid_entry, dict) else Decimal(str(getattr(bid_entry, 'price', getattr(bid_entry, 'p', 0))))
+                        ask_price = Decimal(str(ask_entry.get('price', ask_entry.get('p', 0)))) if isinstance(ask_entry, dict) else Decimal(str(getattr(ask_entry, 'price', getattr(ask_entry, 'p', 0))))
+                        best_bid = bid_price
+                        best_ask = ask_price
+                    except Exception:
+                        pass
+
+                # Try direct fields
+                for attr_name in ['best_bid_price', 'best_bid', 'bid_price', 'bid']:
+                    if best_bid <= 0 and hasattr(d, attr_name):
+                        try:
+                            best_bid = Decimal(str(getattr(d, attr_name)))
+                        except Exception:
+                            pass
+                for attr_name in ['best_ask_price', 'best_ask', 'ask_price', 'ask']:
+                    if best_ask <= 0 and hasattr(d, attr_name):
+                        try:
+                            best_ask = Decimal(str(getattr(d, attr_name)))
+                        except Exception:
+                            pass
+
+                if best_bid > 0 and best_ask > 0:
+                    return best_bid, best_ask
+        except Exception:
+            # Fall through to simplified order_books endpoint
+            pass
+
+        order_books = await order_api.order_books()
+        for market in getattr(order_books, 'order_books', []) or []:
+            if getattr(market, 'market_id', None) == contract_id or getattr(market, 'symbol', None) == self.config.ticker:
+                # Try multiple field names
+                candidates_bid = ['best_bid_price', 'best_bid', 'bid_price', 'bid']
+                candidates_ask = ['best_ask_price', 'best_ask', 'ask_price', 'ask']
+                best_bid = Decimal('0')
+                best_ask = Decimal('0')
+                for attr in candidates_bid:
+                    if hasattr(market, attr):
+                        try:
+                            best_bid = Decimal(str(getattr(market, attr)))
+                            break
+                        except Exception:
+                            continue
+                for attr in candidates_ask:
+                    if hasattr(market, attr):
+                        try:
+                            best_ask = Decimal(str(getattr(market, attr)))
+                            break
+                        except Exception:
+                            continue
+                return best_bid, best_ask
+
+        # If all fails, return zeros to indicate invalid
+        return Decimal('0'), Decimal('0')
 
     async def _submit_order_with_retry(self, order_params: Dict[str, Any]) -> OrderResult:
         """Submit an order with Lighter using official SDK."""
         # Ensure client is initialized
         if self.lighter_client is None:
-            # This is a sync method, so we need to handle this differently
-            # For now, raise an error if client is not initialized
             raise ValueError("Lighter client not initialized. Call connect() first.")
 
         # Create order using official SDK
-        create_order, tx_hash, error = await self.lighter_client.create_order(**order_params)
-        if error is not None:
+        try:
+            result = await self.lighter_client.create_order(**order_params)
+            
+            # Handle None response from SDK - this fixes the original NoneType error
+            if result is None:
+                return OrderResult(
+                    success=False,
+                    order_id=str(order_params.get('client_order_index', 'unknown')),
+                    error_message="SDK returned None response - possible network or API issue"
+                )
+            
+            # Unpack the result tuple safely
+            if not isinstance(result, tuple) or len(result) < 3:
+                return OrderResult(
+                    success=False,
+                    order_id=str(order_params.get('client_order_index', 'unknown')),
+                    error_message=f"Unexpected SDK response format: {type(result)}"
+                )
+                
+            create_order, tx_hash, error = result
+                
+        except Exception as e:
             return OrderResult(
-                success=False, order_id=str(order_params['client_order_index']),
-                error_message=f"Order creation error: {error}")
+                success=False,
+                order_id=str(order_params.get('client_order_index', 'unknown')),
+                error_message=f"Order creation exception: {e}"
+            )
+            
+        # Check for explicit error from SDK
+        if error is not None:
+            # Handle case where error might not have 'code' attribute - this fixes the .code error
+            error_msg = f"Order creation error: {error.code}" if hasattr(error, 'code') else f"Order creation error: {error}"
+            return OrderResult(
+                success=False, 
+                order_id=str(order_params['client_order_index']),
+                error_message=error_msg
+            )
 
-        else:
-            return OrderResult(success=True, order_id=str(order_params['client_order_index']))
+        # Success case
+        return OrderResult(success=True, order_id=str(order_params['client_order_index']))
 
     async def place_limit_order(self, contract_id: str, quantity: Decimal, price: Decimal,
                                 side: str) -> OrderResult:
@@ -355,6 +612,145 @@ class LighterClient(BaseExchangeClient):
 
         order_result = await self._submit_order_with_retry(order_params)
         return order_result
+
+    async def place_market_order(self, contract_id: str, quantity: Decimal, direction: str, prefer_ws: bool = False, reduce_only: bool = False) -> OrderResult:
+        """
+        Place a market order with Lighter using official SDK.
+
+        Uses the official create_market_order method with avg_execution_price parameter.
+        Confirms via WebSocket updates when available, falling back to position delta verification.
+
+        Args:
+            contract_id: The contract identifier (market_index in Lighter)
+            quantity: Order quantity
+            direction: 'buy' or 'sell'
+            prefer_ws: Prefer WebSocket-first confirmation if supported
+            reduce_only: Whether this is a reduce-only order
+
+        Returns:
+            OrderResult: Result of the order placement
+        """
+        self.logger.info(f"[MARKET] Starting market order placement - contract: {contract_id}, quantity: {quantity}, direction: {direction}, reduce_only: {reduce_only}")
+        
+        # Ensure client is initialized
+        if self.lighter_client is None:
+            await self._initialize_lighter_client()
+
+        # Validate direction and map to ask/bid
+        if direction.lower() == 'buy':
+            is_ask = False
+        elif direction.lower() == 'sell':
+            is_ask = True
+        else:
+            return OrderResult(success=False, error_message=f"Invalid direction: {direction}")
+
+        # Capture pre-order position for fallback verification
+        try:
+            pre_position = await self.get_account_positions()
+        except Exception as e:
+            pre_position = None
+
+        # Generate client order index and set current tracking fields
+        client_order_index = int(time.time() * 1000) % 1000000
+        self.current_order_client_id = client_order_index
+        self.current_order = None
+
+        # Get current market prices for avg_execution_price calculation
+        try:
+            bid_price, ask_price = await self.fetch_bbo_prices(contract_id)
+            # For market orders, use the price we expect to get filled at
+            # Buy orders get filled at ask price, sell orders at bid price
+            avg_execution_price = ask_price if direction.lower() == 'buy' else bid_price
+            if avg_execution_price <= 0:
+                return OrderResult(success=False, error_message=f"Invalid market price: {avg_execution_price}")
+        except Exception as e:
+            return OrderResult(success=False, error_message=f"Failed to fetch market price: {e}")
+            
+        # Use the official SDK create_market_order method
+        try:
+            self.logger.info(f"[MARKET] Placing {direction} market order for {quantity} at avg_execution_price: {avg_execution_price}")
+            
+            result = await self.lighter_client.create_market_order(
+                market_index=self.config.contract_id,
+                client_order_index=client_order_index,
+                base_amount=int(quantity * self.base_amount_multiplier),
+                avg_execution_price=int(avg_execution_price * self.price_multiplier),
+                is_ask=is_ask,
+                reduce_only=reduce_only
+            )
+            
+            self.logger.info(f"[MARKET] Market order submitted successfully: {result}")
+            order_result = OrderResult(success=True, order_id=str(client_order_index))
+            
+        except Exception as e:
+            self.logger.error(f"[MARKET] Failed to place market order: {e}")
+            return OrderResult(success=False, error_message=f"Market order failed: {e}")
+        
+        if not order_result.success:
+            return OrderResult(success=False, error_message=f"[MARKET] {order_result.error_message}")
+
+        # Attempt quick confirmation via WebSocket updates
+        start_time = time.time()
+        ws_confirmed = False
+        
+        if prefer_ws:
+            for i in range(50):  # ~5s at 100ms intervals
+                await asyncio.sleep(0.1)
+                if self.current_order is not None:
+                    status = self.current_order.status
+                    if status in ['FILLED', 'CANCELED']:
+                        ws_confirmed = True
+                        break
+
+        # If WS not preferred or not confirmed, do a short general wait for any update
+        if not ws_confirmed:
+            for i in range(50):
+                await asyncio.sleep(0.1)
+                if self.current_order is not None:
+                    break
+
+        if self.current_order is not None:
+            # Use data from WS-tracked current order
+            return OrderResult(
+                success=True,
+                order_id=self.current_order.order_id,
+                side=direction,
+                size=quantity,
+                price=self.current_order.price,
+                status=self.current_order.status,
+                filled_size=self.current_order.filled_size,
+            )
+
+        # Fallback: verify by position delta if available
+        if pre_position is not None:
+            try:
+                post_position = pre_position
+                for i in range(10):  # up to ~5s
+                    await asyncio.sleep(0.5)
+                    post_position = await self.get_account_positions()
+                    if post_position != pre_position:
+                        break
+
+                delta = (pre_position - post_position).copy_abs()
+                
+                if delta > Decimal('0'):
+                    status = 'FILLED' if delta >= quantity else 'PARTIALLY_FILLED'
+                    return OrderResult(
+                        success=True,
+                        order_id=str(client_order_index),
+                        side=direction,
+                        size=quantity,
+                        price=None,
+                        status=status,
+                        filled_size=delta,
+                    )
+            except Exception as e:
+                self.logger.error(f"[MARKET] Position verification failed: {e}")
+        else:
+            self.logger.warning("[MARKET] No pre_position available for fallback verification")
+
+        # If we reach here, order placed but confirmation pending
+        return OrderResult(success=True, order_id=str(client_order_index), error_message="Market order placed; awaiting confirmation")
 
     async def place_open_order(self, contract_id: str, quantity: Decimal, direction: str) -> OrderResult:
         """Place an open order with Lighter using official SDK."""
@@ -465,8 +861,12 @@ class LighterClient(BaseExchangeClient):
             # Get account orders
             account_data = await account_api.account(by="index", value=str(self.account_index))
 
+            # Check if we have accounts data
+            if not account_data.accounts:
+                return None
+
             # Look for the specific order in account positions
-            for position in account_data.positions:
+            for position in account_data.accounts[0].positions:
                 if position.symbol == self.config.ticker:
                     position_amt = abs(float(position.position))
                     if position_amt > 0.001:  # Only include significant positions
@@ -563,8 +963,15 @@ class LighterClient(BaseExchangeClient):
 
         # Find position for current market
         for position in positions:
-            if position.market_id == self.config.contract_id:
-                return Decimal(position.position)
+            try:
+                pos_market_id = self._extract_market_id(position)
+                if pos_market_id is None:
+                    continue
+                cfg_market_id_int = int(self.config.contract_id)
+                if pos_market_id == cfg_market_id_int:
+                    return self._extract_position_size(position)
+            except Exception:
+                continue
 
         return Decimal(0)
 
@@ -610,69 +1017,121 @@ class LighterClient(BaseExchangeClient):
 
     async def get_account_networth(self) -> Decimal:
         """
-        Get account net worth for drawdown monitoring with aggressive caching to avoid rate limiting.
+        Get account net worth for drawdown monitoring.
+        Net worth = collateral (cached) + unrealized PnL (fresh).
         
         Returns:
             Decimal: Account net worth for drawdown monitoring
         """
         try:
             current_time = time.time()
-            
-            # Check cache first - use cached value if still valid
-            if (self._networth_cache is not None and 
-                current_time - self._networth_cache_time < self._networth_cache_duration):
-                self.logger.log(f"Using cached account net worth: {self._networth_cache}", "DEBUG")
-                return self._networth_cache
-            
-            # Check if enough time has passed since last API call to avoid rate limiting
             time_since_last_call = current_time - self._last_api_call_time
-            if time_since_last_call < self._min_api_interval:
-                if self._networth_cache is not None:
-                    self.logger.log(f"Rate limit protection: using cached value {self._networth_cache}", "DEBUG")
-                    return self._networth_cache
-                else:
-                    # Wait before making the call if no cache available
-                    wait_time = self._min_api_interval - time_since_last_call
-                    self.logger.log(f"Rate limit protection: waiting {wait_time:.1f}s before API call", "DEBUG")
-                    await asyncio.sleep(wait_time)
-            
-            # Update last API call time
-            self._last_api_call_time = time.time()
-            
+
             # Ensure lighter client is initialized
             if self.lighter_client is None:
                 await self._initialize_lighter_client()
-            
-            # Use authenticated SignerClient to get account info
+
             account_api = lighter.AccountApi(self.lighter_client.api_client)
-            
-            # Get account data
-            account_data = await account_api.account(by="index", value=str(self.account_index))
-            
-            if not account_data or not account_data.accounts:
-                self.logger.log("Failed to get account data", "ERROR")
-                # Return cached value if available, otherwise 0
-                return self._networth_cache if self._networth_cache is not None else Decimal('0')
-            
-            account = account_data.accounts[0]
-            
-            # Calculate total net worth (collateral + unrealized PnL)
-            total_balance = Decimal('0')
-            
-            # Add account collateral (this is the actual available balance in Lighter)
-            if hasattr(account, 'collateral') and account.collateral is not None:
-                total_balance += Decimal(str(account.collateral))
-            
-            # Add unrealized PnL from positions (if available)
-            # Note: In Lighter, positions might be queried separately
-            # For now, we'll use the collateral as the main balance indicator
-            
-            # Update cache with fresh data
-            self._networth_cache = total_balance
-            self._networth_cache_time = current_time
-            
-            self.logger.log(f"Account net worth (fresh): {total_balance}", "INFO")
-            return total_balance
+
+            # Collateral: use cache if valid; otherwise refresh via API (rate limited)
+            use_cached_collateral = False
+            collateral = Decimal('0')
+            account_data = None
+
+            if (self._collateral_cache is not None and
+                current_time - self._collateral_cache_time < self._networth_cache_duration and
+                time_since_last_call < self._min_api_interval):
+                collateral = self._collateral_cache
+                use_cached_collateral = True
+            else:
+                # If too soon since last API call and no cache is available, wait
+                if time_since_last_call < self._min_api_interval and self._collateral_cache is None:
+                    wait_time = self._min_api_interval - time_since_last_call
+                    self.logger.log(f"Rate limit protection: waiting {wait_time:.1f}s before collateral API call", "DEBUG")
+                    await asyncio.sleep(wait_time)
+
+                # Update last API call time
+                self._last_api_call_time = time.time()
+
+                # Get account data
+                account_data = await account_api.account(by="index", value=str(self.account_index))
+                if not account_data or not account_data.accounts:
+                    self.logger.log("Failed to get account data", "ERROR")
+                    # Return cached value if available, otherwise 0
+                    return self._networth_cache if self._networth_cache is not None else Decimal('0')
+
+                account = account_data.accounts[0]
+                if hasattr(account, 'collateral') and account.collateral is not None:
+                    collateral = Decimal(str(account.collateral))
+                else:
+                    collateral = Decimal('0')
+                # Update collateral cache
+                self._collateral_cache = collateral
+                self._collateral_cache_time = time.time()
+
+            # Unrealized PnL: only use native unrealized_pnl fields from positions
+            unrealized_pnl = Decimal('0')
+            try:
+                # Use positions from fresh account_data if available to avoid extra API call
+                if account_data is not None and hasattr(account_data.accounts[0], 'positions'):
+                    positions = account_data.accounts[0].positions
+                else:
+                    positions = await self._fetch_positions_with_retry()
+
+                # Log positions for debugging
+                try:
+                    self.logger.log(f"Positions count: {len(positions)}", "DEBUG")
+                except Exception:
+                    pass
+
+                # Aggregate unrealized_pnl from positions that match current market
+                matched_any = False
+                cfg_market_id_int = int(self.config.contract_id)
+                for position in positions:
+                    try:
+                        pos_market_id_int = self._extract_market_id(position)
+                        if pos_market_id_int is None or pos_market_id_int != cfg_market_id_int:
+                            continue
+
+                        pos_unrealized_pnl = self._extract_unrealized_pnl(position)
+                        if pos_unrealized_pnl is not None:
+                            unrealized_pnl += pos_unrealized_pnl
+                            matched_any = True
+                            self.logger.log(f"Using position unrealized_pnl={pos_unrealized_pnl}", "DEBUG")
+                            break
+                    except Exception as inner_e:
+                        self.logger.log(f"Error processing position for unrealized_pnl: {inner_e}", "WARNING")
+                        continue
+
+                if unrealized_pnl == 0:
+                    if not positions or len(positions) == 0:
+                        self.logger.log("PnL result is 0: no positions returned", "INFO")
+                    elif not matched_any:
+                        self.logger.log(
+                            f"PnL result is 0: no matching position with unrealized_pnl for contract_id={self.config.contract_id}",
+                            "INFO"
+                        )
+            except Exception as e:
+                self.logger.log(f"Failed to aggregate unrealized PnL, using 0: {e}", "WARNING")
+                unrealized_pnl = Decimal('0')
+
+            total_networth = collateral + unrealized_pnl
+
+            # Update net worth cache for emergency fallback paths
+            self._networth_cache = total_networth
+            self._networth_cache_time = time.time()
+
+            if use_cached_collateral:
+                self.logger.log(
+                    f"Net worth (cached collateral): collateral={collateral}, unrealized_pnl={unrealized_pnl}, total={total_networth}",
+                    "INFO"
+                )
+            else:
+                self.logger.log(
+                    f"Net worth (fresh collateral): collateral={collateral}, unrealized_pnl={unrealized_pnl}, total={total_networth}",
+                    "INFO"
+                )
+            return total_networth
             
         except Exception as e:
             self.logger.log(f"Error fetching account net worth: {e}", "ERROR")

@@ -429,7 +429,7 @@ class ParadexClient(BaseExchangeClient):
         retry=retry_if_exception_type(Exception),
         reraise=True
     )
-    async def fetch_bbo_prices(self, contract_id: str) -> Dict[str, Any]:
+    async def fetch_bbo_prices(self, contract_id: str) -> Tuple[Decimal, Decimal]:
         """Get orderbook using official SDK."""
         # Check WebSocket health periodically
         await self._check_websocket_health()
@@ -529,6 +529,71 @@ class ParadexClient(BaseExchangeClient):
             raise Exception('Paradex Server Error: Order not processed after 10 seconds')
         else:
             return order_info
+
+    async def place_market_order(self, contract_id: str, quantity: Decimal, direction: str) -> OrderResult:
+        """Place a true market order with Paradex using OrderType.Market."""
+        from paradex_py.common.order import Order, OrderType, OrderSide
+
+        # Convert direction to OrderSide
+        if direction == 'buy':
+            order_side = OrderSide.Buy
+        elif direction == 'sell':
+            order_side = OrderSide.Sell
+        else:
+            raise Exception(f"[MARKET] Invalid direction: {direction}")
+
+        # Create true Market order using Paradex SDK
+        order = Order(
+            market=contract_id,
+            order_type=OrderType.Market,  # Use true Market order type
+            order_side=order_side,
+            size=quantity.quantize(self.order_size_increment, rounding=ROUND_HALF_UP)
+            # No limit_price needed for Market orders
+        )
+
+        self.logger.log(f"[MARKET] Placing {direction} market order for {quantity}", "INFO")
+
+        order_result = self._submit_order_with_retry(order)
+
+        order_id = order_result.get('id')
+        order_status = order_result.get('status')
+        
+        # Wait a short time for order to be processed
+        order_status_start_time = time.time()
+        order_info = await self.get_order_info(order_id)
+        if order_info is not None:
+            order_status = order_info.status
+        
+        while order_status in ['NEW'] and time.time() - order_status_start_time < 5:
+            await asyncio.sleep(0.01)
+            order_info = await self.get_order_info(order_id)
+            if order_info is not None:
+                order_status = order_info.status
+
+        if order_status == 'NEW':
+            self.logger.log(f"[MARKET] Order {order_id} still processing after 5 seconds", "WARNING")
+        
+        # For IOC orders, they should either be CLOSED (filled/canceled) or still processing
+        if order_info:
+            self.logger.log(f"[MARKET] Order {order_id} final status: {order_info.status}, filled: {order_info.filled_size}/{quantity}", "INFO")
+            # Return OrderResult format for consistency with other methods
+            return OrderResult(
+                success=order_info.status in ['CLOSED', 'FILLED'],
+                order_id=order_info.order_id,
+                side=direction,
+                size=quantity,
+                status=order_info.status,
+                filled_size=Decimal(order_info.filled_size) if order_info.filled_size else Decimal('0')
+            )
+        else:
+            self.logger.log(f"[MARKET] Failed to get order info for {order_id}", "ERROR")
+            return OrderResult(
+                success=False,
+                order_id=order_id,
+                side=direction,
+                size=quantity,
+                error_message=f"Failed to get order info for {order_id}"
+            )
 
     async def place_open_order(self, contract_id: str, quantity: Decimal, direction: str) -> OrderResult:
         """Place an open order with Paradex using official SDK."""
@@ -702,11 +767,22 @@ class ParadexClient(BaseExchangeClient):
             status=order_status
         )
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_fixed(1),
+        retry=retry_if_exception_type(Exception),
+        reraise=True
+    )
+    def _cancel_order_with_retry(self, order_id: str) -> None:
+        """Cancel an order with retry mechanism."""
+        self.paradex.api_client.cancel_order(order_id)
+
     async def cancel_order(self, order_id: str) -> OrderResult:
         """Cancel an order with Paradex using official SDK."""
         try:
-            # Cancel the order using official SDK
-            self.paradex.api_client.cancel_order(order_id)
+            # Run the synchronous cancel_order in a thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._cancel_order_with_retry, order_id)
             return OrderResult(success=True)
 
         except Exception as e:

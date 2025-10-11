@@ -56,6 +56,10 @@ class GrvtClient(BaseExchangeClient):
         self.partially_filled_size = 0
         self.partially_filled_avg_price = 0
 
+        # Internal WS tracking for fallback flows
+        self._ws_update_event = asyncio.Event()
+        self._last_order_update: Optional[Dict[str, Any]] = None
+
     def _initialize_grvt_clients(self) -> None:
         """Initialize the GRVT REST and WebSocket clients."""
         try:
@@ -181,6 +185,22 @@ class GrvtClient(BaseExchangeClient):
                                 mapped_status = "PARTIALLY_FILLED"
 
                             if mapped_status in ['OPEN', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED']:
+                                # Store last update for internal fallback tracking
+                                try:
+                                    self._last_order_update = {
+                                        'order_id': order_id,
+                                        'side': side,
+                                        'status': mapped_status,
+                                        'size': size,
+                                        'price': price,
+                                        'contract_id': contract_id,
+                                        'filled_size': filled_size,
+                                        'timestamp': time.time(),
+                                    }
+                                    # Signal awaiting coroutines
+                                    self._ws_update_event.set()
+                                except Exception:
+                                    pass
                                 if self._order_update_handler:
                                     self._order_update_handler({
                                         'order_id': order_id,
@@ -448,11 +468,181 @@ class GrvtClient(BaseExchangeClient):
                 self.partially_filled_avg_price = original_partially_filled_avg_price
                 raise Exception(f"[CLOSE] Unexpected order status: {order_status}")
 
+    async def place_market_order(self, contract_id: str, quantity: Decimal, direction: str, prefer_ws: bool = False) -> OrderResult:
+        """
+        Place a market order with GRVT.
+        
+        GRVT SDK supports true market orders through the create_order method with order_type="market".
+        Market orders are executed immediately at the best available price.
+        
+        Args:
+            contract_id: The contract identifier
+            quantity: Order quantity
+            direction: Order direction ('buy' or 'sell')
+            
+        Returns:
+            OrderResult: Result of the order placement
+        """
+        try:
+            self.logger.log(f"[MARKET] Placing {direction} market order for {quantity}", "INFO")
+            # Capture pre-order position for fallback verification
+            try:
+                pre_position = await self.get_account_positions()
+            except Exception:
+                pre_position = None
+            
+            # Create true market order using GRVT SDK
+            response = self.rest_client.create_order(
+                symbol=contract_id,
+                order_type="market",  # Use market order type
+                side=direction,
+                amount=str(quantity),
+                price=None,  # No price needed for market orders
+                params={
+                    'order_duration_secs': 60  # Short duration for market orders
+                }
+            )
+            
+            if not response or 'metadata' not in response:
+                self.logger.log(f"[MARKET] Invalid response from GRVT: {response}", "ERROR")
+                return OrderResult(success=False, error_message="Invalid response from GRVT")
+            
+            client_order_id = response['metadata'].get('client_order_id')
+            server_order_id = response['metadata'].get('order_id')
+            self.logger.log(f"[MARKET] Market order placed successfully: client_order_id={client_order_id} server_order_id={server_order_id}", "INFO")
+            
+            # Market orders should execute immediately, but give it a moment
+            await asyncio.sleep(1.0)
+            
+            # If not preferring WS, try REST polling briefly for quick confirmation
+            if not prefer_ws:
+                # Check order status multiple times as market orders should fill quickly
+                rest_query_failed = False
+                first_fetch_done = False
+                for attempt in range(5):
+                    try:
+                        # 优先使用服务端 order_id（更稳定），首次没有则用 client_order_id 获取并提取
+                        if server_order_id:
+                            order_info = await self.get_order_info(order_id=server_order_id)
+                        elif client_order_id:
+                            order_info = await self.get_order_info(client_order_id=client_order_id)
+                            # 首次成功后，如果返回包含服务端 order_id，则后续切换为 order_id 查询
+                            if order_info and order_info.order_id:
+                                server_order_id = order_info.order_id
+                        else:
+                            order_info = None
+                        first_fetch_done = True
+                    except Exception:
+                        rest_query_failed = True
+                        break
+                    if order_info:
+                        if order_info.status in ['FILLED', 'PARTIALLY_FILLED']:
+                            self.logger.log(f"[MARKET] Order {server_order_id or client_order_id} filled: {order_info.filled_size}/{quantity}", "INFO")
+                            return OrderResult(
+                                success=True,
+                                order_id=server_order_id or client_order_id,
+                                side=direction,
+                                size=quantity,
+                                price=order_info.price,
+                                status=order_info.status
+                            )
+                        elif order_info.status == 'CANCELLED':
+                            self.logger.log(f"[MARKET] Order {server_order_id or client_order_id} was cancelled", "WARNING")
+                            return OrderResult(success=False, error_message="Market order cancelled")
+                        elif order_info.status == 'OPEN':
+                            if attempt < 4:  # Don't sleep on the last attempt
+                                await asyncio.sleep(1.0)
+                        else:
+                            return OrderResult(success=False, error_message=f"Unexpected status: {order_info.status}")
+                    else:
+                        if attempt < 4:
+                            await asyncio.sleep(1.0)
+            
+            # Degrade to WS update wait and position fact-check for cleaner logs
+            self.logger.log(f"[MARKET] REST查询失败或未达终态，降级等待WS回报与持仓校验", "INFO")
+            # Clear any previous event and wait for a fresh update
+            try:
+                self._ws_update_event.clear()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(self._ws_update_event.wait(), timeout=3.0)
+            except asyncio.TimeoutError:
+                pass
+
+            # Check last WS update for this contract and side
+            ws_update = self._last_order_update
+            if ws_update and ws_update.get('contract_id') == contract_id and ws_update.get('side') == direction:
+                ws_status = ws_update.get('status')
+                # If server order id is still missing, try to take it from WS update
+                if not server_order_id:
+                    try:
+                        server_order_id = ws_update.get('order_id') or server_order_id
+                    except Exception:
+                        pass
+                if ws_status in ['FILLED', 'PARTIALLY_FILLED']:
+                    filled_sz = Decimal(str(ws_update.get('filled_size', '0')))
+                    self.logger.log(f"[MARKET] WS确认订单更新: {ws_status} filled={filled_sz}", "INFO")
+                    return OrderResult(
+                        success=True,
+                        order_id=server_order_id or client_order_id,
+                        side=direction,
+                        size=quantity,
+                        price=Decimal(str(ws_update.get('price', '0'))),
+                        status=ws_status,
+                        filled_size=filled_sz
+                    )
+
+            # Position fact-check as final fallback
+            if pre_position is not None:
+                try:
+                    post_position = pre_position
+                    for _ in range(10):
+                        await asyncio.sleep(0.5)
+                        post_position = await self.get_account_positions()
+                        if post_position != pre_position:
+                            break
+
+                    delta = (pre_position - post_position).copy_abs()
+                    if delta > Decimal('0'):
+                        status = 'FILLED' if delta >= quantity else 'PARTIALLY_FILLED'
+                        self.logger.log(
+                            f"[MARKET] 基于持仓校验确认: {status} pre={pre_position} post={post_position} delta={delta}",
+                            "INFO"
+                        )
+                        return OrderResult(
+                            success=True,
+                            order_id=server_order_id or client_order_id,
+                            side=direction,
+                            size=quantity,
+                            price=None,
+                            status=status,
+                            filled_size=delta
+                        )
+                except Exception:
+                    pass
+
+            # If we get here, the order might still be processing; keep logs clean
+            self.logger.log(f"[MARKET] 市价单已下达，状态待确认（已启用降级流程）", "INFO")
+            return OrderResult(success=True, order_id=server_order_id or client_order_id, error_message="Market order placed; awaiting confirmation")
+                
+        except Exception as e:
+            self.logger.log(f"[MARKET] Error placing market order: {e}", "ERROR")
+            return OrderResult(success=False, error_message=str(e))
+
+    @query_retry(reraise=True)
+    def _cancel_order_with_retry(self, order_id: str):
+        """Cancel order with retry mechanism (synchronous)."""
+        return self.rest_client.cancel_order(id=order_id)
+
     async def cancel_order(self, order_id: str) -> OrderResult:
         """Cancel an order with GRVT."""
         try:
-            # Cancel the order using GRVT SDK
-            cancel_result = self.rest_client.cancel_order(id=order_id)
+            # Execute synchronous cancel_order in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            cancel_result = await loop.run_in_executor(
+                None, self._cancel_order_with_retry, order_id
+            )
 
             if cancel_result:
                 return OrderResult(success=True)

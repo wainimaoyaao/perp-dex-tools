@@ -4,6 +4,7 @@
 
 import time
 import asyncio
+import inspect
 from decimal import Decimal
 from typing import Dict, Any, Optional, Callable
 from enum import Enum
@@ -89,7 +90,8 @@ class DrawdownConfig:
     medium_warning_threshold: Decimal = Decimal("0.08")  # 8% 中度警告
     severe_stop_loss_threshold: Decimal = Decimal("0.12")  # 12% 严重止损
     update_frequency_seconds: int = 15  # 净值更新频率（秒）
-    smoothing_window_size: int = 3  # 平滑窗口大小
+    rapid_mode_timeout: int = 30  # 极速模式超时时间（秒）
+    cancel_timeout: int = 5  # 订单取消超时时间（秒）
 
 
 class DrawdownMonitor:
@@ -131,9 +133,6 @@ class DrawdownMonitor:
         self.use_cached_value: bool = False  # 是否正在使用缓存值
         self.strict_threshold_multiplier: Decimal = Decimal("0.8")  # 缓存模式下的严格阈值倍数
         
-        # 平滑处理
-        self.networth_history = []
-        
         # 回调函数
         self.warning_callbacks: Dict[DrawdownLevel, Callable] = {}
         self.stop_loss_callback: Optional[Callable] = None
@@ -169,7 +168,6 @@ class DrawdownMonitor:
         self.last_update_time = time.time()
         self.is_monitoring = True
         self.stop_loss_triggered = False
-        self.networth_history = [initial_networth]
         
         # 初始化缓存状态
         self.last_successful_networth = initial_networth
@@ -234,7 +232,7 @@ class DrawdownMonitor:
     
     def _update_networth_core(self, current_networth: Decimal) -> bool:
         """
-        核心净值更新逻辑，跳过频率检查
+        核心净值更新逻辑，包含频率检查
         
         Args:
             current_networth: 当前净值
@@ -270,26 +268,19 @@ class DrawdownMonitor:
             
             current_time = time.time()
             
+            # 频率检查
+            if self.config.update_frequency_seconds > 0:
+                time_since_last = current_time - self.last_update_time
+                if time_since_last < self.config.update_frequency_seconds:
+                    self.logger.log(f"Update frequency check: {time_since_last:.1f}s < {self.config.update_frequency_seconds}s, skipping", "DEBUG")
+                    return True
+            
             # 保存上一次的净值用于比较
             previous_networth = self.current_networth
             
-            # 更新净值历史（用于平滑处理）
-            try:
-                self._update_networth_history(current_networth)
-            except Exception as e:
-                self.logger.log(f"Error updating networth history: {e}", "ERROR")
-                # 使用当前值作为备用方案
-                self.networth_history = [current_networth]
-            
-            # 计算平滑后的净值
-            try:
-                smoothed_networth = self._calculate_smoothed_networth()
-                self.current_networth = smoothed_networth
-                self.logger.log(f"Smoothing calculation: raw=${current_networth}, smoothed=${smoothed_networth}, history_size={len(self.networth_history)}", "DEBUG")
-            except Exception as e:
-                self.logger.log(f"Error calculating smoothed networth: {e}, using raw value", "ERROR")
-                self.current_networth = current_networth
-                smoothed_networth = current_networth
+            # 直接使用原始净值，不进行平滑处理
+            self.current_networth = current_networth
+            self.logger.log(f"Using raw networth: ${current_networth}", "DEBUG")
             
             # 记录净值变化
             try:
@@ -308,16 +299,14 @@ class DrawdownMonitor:
             # 计算回撤率
             try:
                 drawdown_rate = self._calculate_drawdown_rate()
-                raw_drawdown_rate = self._calculate_raw_drawdown_rate(current_networth)
-                self.logger.log(f"Drawdown calculation: smoothed={drawdown_rate*100:.4f}%, raw={raw_drawdown_rate*100:.4f}%", "DEBUG")
+                self.logger.log(f"Drawdown calculation: {drawdown_rate*100:.4f}%", "DEBUG")
             except Exception as e:
                 self.logger.log(f"Error calculating drawdown rates: {e}", "ERROR")
                 drawdown_rate = Decimal("0")
-                raw_drawdown_rate = Decimal("0")
             
             # 检查回撤级别
             try:
-                new_level = self._determine_drawdown_level(drawdown_rate, raw_drawdown_rate)
+                new_level = self._determine_drawdown_level(drawdown_rate)
                 
                 # 处理级别变化
                 if new_level != self.current_level:
@@ -335,7 +324,7 @@ class DrawdownMonitor:
             self.last_update_time = current_time
             
             # 记录详细状态
-            self._log_detailed_status(current_networth, smoothed_networth, drawdown_rate, new_level)
+            self._log_detailed_status(current_networth, drawdown_rate, new_level)
             
             # 性能监控
             execution_time = time.time() - method_start_time
@@ -434,23 +423,9 @@ class DrawdownMonitor:
             # 保存上一次的净值用于比较
             previous_networth = self.current_networth
             
-            # 更新净值历史（用于平滑处理）
-            try:
-                self._update_networth_history(current_networth)
-            except Exception as e:
-                self.logger.log(f"Error updating networth history: {e}", "ERROR")
-                # 使用当前值作为备用方案
-                self.networth_history = [current_networth]
-            
-            # 计算平滑后的净值
-            try:
-                smoothed_networth = self._calculate_smoothed_networth()
-                self.current_networth = smoothed_networth
-                self.logger.log(f"Smoothing calculation: raw=${current_networth}, smoothed=${smoothed_networth}, history_size={len(self.networth_history)}", "DEBUG")
-            except Exception as e:
-                self.logger.log(f"Error calculating smoothed networth: {e}, using raw value", "ERROR")
-                self.current_networth = current_networth
-                smoothed_networth = current_networth
+            # 直接使用原始净值，不进行平滑处理
+            self.current_networth = current_networth
+            self.logger.log(f"Using raw networth: ${current_networth}", "DEBUG")
             
             # 记录净值变化
             try:
@@ -469,16 +444,14 @@ class DrawdownMonitor:
             # 计算回撤率
             try:
                 drawdown_rate = self._calculate_drawdown_rate()
-                raw_drawdown_rate = self._calculate_raw_drawdown_rate(current_networth)
-                self.logger.log(f"Drawdown calculation: smoothed={drawdown_rate*100:.4f}%, raw={raw_drawdown_rate*100:.4f}%", "DEBUG")
+                self.logger.log(f"Drawdown calculation: {drawdown_rate*100:.4f}%", "DEBUG")
             except Exception as e:
                 self.logger.log(f"Error calculating drawdown rates: {e}", "ERROR")
                 drawdown_rate = Decimal("0")
-                raw_drawdown_rate = Decimal("0")
             
             # 检查回撤级别
             try:
-                new_level = self._determine_drawdown_level(drawdown_rate, raw_drawdown_rate)
+                new_level = self._determine_drawdown_level(drawdown_rate)
                 
                 # 处理级别变化
                 if new_level != self.current_level:
@@ -496,7 +469,7 @@ class DrawdownMonitor:
             self.last_update_time = current_time
             
             # 记录详细状态
-            self._log_detailed_status(current_networth, smoothed_networth, drawdown_rate, new_level)
+            self._log_detailed_status(current_networth, drawdown_rate, new_level)
             
             # 性能监控
             execution_time = time.time() - method_start_time
@@ -532,24 +505,10 @@ class DrawdownMonitor:
         
         return max(Decimal("0"), drawdown_rate)  # 确保回撤率不为负
     
-    def _calculate_raw_drawdown_rate(self, raw_networth: Decimal) -> Decimal:
-        """计算基于原始净值的回撤率（用于严重止损检测）"""
-        if not self.session_peak_networth or self.session_peak_networth <= 0:
-            return Decimal("0")
-        
-        # 确保raw_networth不为None
-        if raw_networth is None:
-            return Decimal("0")
-        
-        drawdown = self.session_peak_networth - raw_networth
-        drawdown_rate = drawdown / self.session_peak_networth
-        
-        return max(Decimal("0"), drawdown_rate)  # 确保回撤率不为负
-    
-    def _determine_drawdown_level(self, drawdown_rate: Decimal, raw_drawdown_rate: Decimal = None) -> DrawdownLevel:
+    def _determine_drawdown_level(self, drawdown_rate: Decimal) -> DrawdownLevel:
         """根据回撤率确定警告级别"""
-        # 对于严重止损，使用原始回撤率（如果提供）以获得更敏感的检测
-        severe_check_rate = raw_drawdown_rate if raw_drawdown_rate is not None else drawdown_rate
+        # 使用当前回撤率进行检测
+        severe_check_rate = drawdown_rate
         
         # 在缓存模式下使用更严格的阈值
         if self.use_cached_value:
@@ -587,7 +546,17 @@ class DrawdownMonitor:
         # 触发相应的回调函数
         if new_level in self.warning_callbacks:
             try:
-                self.warning_callbacks[new_level](drawdown_rate, self.current_networth, self.session_peak_networth)
+                cb = self.warning_callbacks[new_level]
+                # 统一参数顺序为：当前回撤、峰值净值、当前净值，并将 Decimal 转为 float 以便格式化
+                args = (
+                    float(drawdown_rate),
+                    float(self.session_peak_networth) if self.session_peak_networth is not None else 0.0,
+                    float(self.current_networth) if self.current_networth is not None else 0.0,
+                )
+                if inspect.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(*args))
+                else:
+                    cb(*args)
             except Exception as e:
                 self.logger.log(f"Error in warning callback for {new_level.value}: {e}", "ERROR")
         
@@ -614,7 +583,11 @@ class DrawdownMonitor:
         self.logger.log("=" * 60, "ERROR")
     
     async def execute_pending_stop_loss(self):
-        """执行待处理的止损（异步方法）"""
+        """
+        执行待处理的止损（异步方法）
+        
+        现在只使用极速止损模式（15-30秒目标），不再支持传统模式
+        """
         if not hasattr(self, '_pending_stop_loss_drawdown') or not self.stop_loss_triggered:
             return
         
@@ -622,27 +595,45 @@ class DrawdownMonitor:
         
         # 执行自动止损（如果配置了交易所客户端和合约ID）
         if self.exchange_client and self.contract_id:
-            self.logger.log("Executing automatic stop-loss...", "INFO")
+            self.logger.log("Executing RAPID stop-loss (target: 15-30 seconds)...", "INFO")
             try:
-                stop_loss_result = await self._execute_auto_stop_loss(
+                stop_loss_result = await self._execute_rapid_stop_loss(
                     self.exchange_client, 
                     self.contract_id
                 )
-                # _execute_auto_stop_loss 成功时返回True，失败时返回None
                 if stop_loss_result is True:
-                    self.logger.log("Automatic stop-loss executed successfully", "INFO")
+                    self.logger.log("Rapid stop-loss executed successfully", "INFO")
                 else:
-                    self.logger.log("Automatic stop-loss execution failed", "ERROR")
+                    self.logger.log("Rapid stop-loss execution failed", "ERROR")
             except Exception as e:
-                self.logger.log(f"Error during automatic stop-loss: {e}", "ERROR")
+                self.logger.log(f"Error during rapid stop-loss: {e}", "ERROR")
         else:
             self.logger.log("Automatic stop-loss not configured (missing exchange_client or contract_id)", "WARNING")
         
         # 触发止损回调
         if self.stop_loss_callback:
             try:
-                loss_amount = self.session_peak_networth - self.current_networth
-                self.stop_loss_callback(drawdown_rate, self.current_networth, self.session_peak_networth, loss_amount)
+                # 与 TradingBot 中的回调签名保持一致：当前回撤、峰值净值、当前净值
+                cb = self.stop_loss_callback
+                # 计算损失金额（峰值净值 - 当前净值）
+                try:
+                    if self.session_peak_networth is not None and self.current_networth is not None:
+                        loss_amount = self.session_peak_networth - self.current_networth
+                    else:
+                        loss_amount = Decimal(0)
+                except Exception:
+                    loss_amount = Decimal(0)
+
+                args = (
+                    float(drawdown_rate),
+                    float(self.session_peak_networth) if self.session_peak_networth is not None else 0.0,
+                    float(self.current_networth) if self.current_networth is not None else 0.0,
+                    float(loss_amount),
+                )
+                if inspect.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(*args))
+                else:
+                    cb(*args)
             except Exception as e:
                 self.logger.log(f"Error in stop loss callback: {e}", "ERROR")
         
@@ -651,258 +642,191 @@ class DrawdownMonitor:
     
 
     
-    async def _execute_auto_stop_loss(self, exchange_client, contract_id: str, retry_interval: int = 3):
+
+
+    async def _execute_rapid_stop_loss(self, exchange_client, contract_id: str) -> bool:
         """
-        执行智能止损，使用bid1/ask1价格并包含重试机制
-        新逻辑：取消所有挂单 → 读取持仓 → 挂买1/卖1 → 监控5秒 → 未成交则重试
-        持续循环直至所有止损挂单成交完成，并确认无未成交订单
+        执行极速止损策略：快速取消 + 一次性市价单
+        目标：15-30秒内完成整个止损流程
+        
+        流程：
+        1. 快速并行取消所有挂单（5秒内完成）
+        2. 获取当前持仓
+        3. 一次性市价单平仓
+        4. 监控订单执行状态
         
         Args:
             exchange_client: 交易所客户端
             contract_id: 合约ID
-            retry_interval: 重试间隔秒数（默认3秒）
+            
+        Returns:
+            bool: 执行是否成功
         """
         execution_start_time = time.time()
-        attempt = 0
-        total_orders_placed = 0
-        total_orders_filled = 0
         
         try:
-            self.logger.log("Starting intelligent stop-loss execution with 5-second monitoring", "INFO")
-            self.logger.log(f"Execution parameters: contract_id={contract_id}, retry_interval={retry_interval}s", "DEBUG")
+            self.logger.log("Starting rapid stop-loss execution", "INFO")
+            self.logger.log(f"Target: Complete within 15-30 seconds for contract {contract_id}", "INFO")
             
-            # 智能止损重试循环 - 持续重试直至完全成交
-            while True:
-                attempt += 1
-                attempt_start_time = time.time()
-                
-                self.logger.log(f"Stop-loss attempt {attempt}: Starting execution cycle", "INFO")
-                
-                try:
-                    # 步骤1: 取消所有挂单
-                    cancel_start_time = time.time()
-                    try:
-                        cancel_result = await self._cancel_all_pending_orders(exchange_client, contract_id)
-                        cancel_duration = time.time() - cancel_start_time
-                        self.logger.log(f"Cancel orders completed in {cancel_duration:.3f}s", "DEBUG")
-                    except Exception as e:
-                        cancel_duration = time.time() - cancel_start_time
-                        # 包装为自定义异常但不中断执行
-                        cancel_error = StopLossExecutionError(
-                            f"Failed to cancel orders: {e}",
-                            execution_step="cancel_orders",
-                            context={
-                                'attempt': attempt,
-                                'duration': cancel_duration,
-                                'contract_id': contract_id
-                            }
-                        )
-                        self.logger.log(f"Error canceling orders after {cancel_duration:.3f}s: {cancel_error}", "ERROR")
-                        import traceback
-                        self.logger.log(f"Cancel orders traceback: {traceback.format_exc()}", "DEBUG")
-                        # 继续执行，不因取消订单失败而中断
-                    
-                    # 步骤2: 读取当前持仓信息（带重试机制）
-                    position_start_time = time.time()
-                    try:
-                        position_amt = await self._get_position_with_retry(exchange_client, max_retries=3)
-                        position_duration = time.time() - position_start_time
-                        
-                        if position_amt is None:
-                            self.logger.log(f"Failed to read position after {position_duration:.3f}s and 3 retries, will retry entire cycle", "WARNING")
-                            await asyncio.sleep(retry_interval)
-                            continue
-                        
-                        self.logger.log(f"Position read in {position_duration:.3f}s: {position_amt}", "DEBUG")
-                        
-                        if abs(position_amt) < 0.001:  # 考虑浮点精度，基本无持仓
-                            execution_duration = time.time() - execution_start_time
-                            self.logger.log(f"No significant position remaining, stop-loss execution completed in {execution_duration:.3f}s", "INFO")
-                            self.logger.log(f"Execution summary: {attempt} attempts, {total_orders_placed} orders placed, {total_orders_filled} orders filled", "INFO")
-                            break
-                            
-                    except Exception as e:
-                        position_duration = time.time() - position_start_time
-                        # 包装为自定义异常
-                        position_error = StopLossExecutionError(
-                            f"Failed to read position: {e}",
-                            execution_step="read_position",
-                            context={
-                                'attempt': attempt,
-                                'duration': position_duration,
-                                'contract_id': contract_id,
-                                'max_retries': 3
-                            }
-                        )
-                        self.logger.log(f"Error reading position after {position_duration:.3f}s: {position_error}", "ERROR")
-                        import traceback
-                        self.logger.log(f"Position read traceback: {traceback.format_exc()}", "DEBUG")
-                        await asyncio.sleep(retry_interval)
-                        continue
-                    
-                    # 确定持仓方向和大小
-                    position_side = "long" if position_amt > 0 else "short"
-                    position_size = abs(position_amt)
-                    
-                    self.logger.log(f"Current position: {position_side} {position_size}", "INFO")
-                    
-                    # 步骤3: 获取最新的bid1/ask1价格并下单
-                    price_start_time = time.time()
-                    try:
-                        best_bid, best_ask = await exchange_client.fetch_bbo_prices(contract_id)
-                        price_duration = time.time() - price_start_time
-                        
-                        self.logger.log(f"BBO prices fetched in {price_duration:.3f}s: bid={best_bid}, ask={best_ask}", "DEBUG")
-                        
-                        if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
-                            self.logger.log(f"Invalid bid/ask prices: bid={best_bid}, ask={best_ask}", "WARNING")
-                            await asyncio.sleep(retry_interval)
-                            continue
-                            
-                    except Exception as e:
-                        price_duration = time.time() - price_start_time
-                        self.logger.log(f"Error fetching BBO prices after {price_duration:.3f}s: {e}", "ERROR")
-                        import traceback
-                        self.logger.log(f"BBO price fetch traceback: {traceback.format_exc()}", "DEBUG")
-                        await asyncio.sleep(retry_interval)
-                        continue
-                    
-                    # 使用bid1/ask1价格确保立即成交
-                    if position_side == "long":
-                        # 多头持仓：挂bid1价格的限价卖单，确保能立即成交
-                        stop_price = best_bid
-                        order_side = "sell"
-                    else:
-                        # 空头持仓：挂ask1价格的限价买单，确保能立即成交
-                        stop_price = best_ask
-                        order_side = "buy"
-                    
-                    self.logger.log(f"Placing stop-loss order: {order_side} {position_size} at {stop_price} (bid: {best_bid}, ask: {best_ask})", "INFO")
-                    
-                    # 下止损订单
-                    order_start_time = time.time()
-                    try:
-                        result = await exchange_client.place_close_order(
-                            contract_id=contract_id,
-                            quantity=position_size,
-                            price=stop_price,
-                            side=order_side
-                        )
-                        order_duration = time.time() - order_start_time
-                        total_orders_placed += 1
-                        
-                        if not result.success:
-                            self.logger.log(f"Failed to place stop-loss order after {order_duration:.3f}s: {result.error_message}", "WARNING")
-                            self.logger.log(f"Order placement failure details: side={order_side}, size={position_size}, price={stop_price}", "DEBUG")
-                            await asyncio.sleep(retry_interval)
-                            continue
-                        
-                        order_id = result.order_id
-                        self.logger.log(f"Stop-loss order placed in {order_duration:.3f}s: {order_id}", "INFO")
-                        
-                        # 如果订单立即成交，检查是否还有持仓
-                        if result.status == 'FILLED':
-                            total_orders_filled += 1
-                            self.logger.log(f"Stop-loss order filled immediately: {order_id}", "INFO")
-                            continue  # 继续循环检查是否还有持仓
-                            
-                    except Exception as e:
-                        order_duration = time.time() - order_start_time
-                        # 包装为自定义异常
-                        order_error = StopLossExecutionError(
-                            f"Failed to place stop-loss order: {e}",
-                            execution_step="place_order",
-                            context={
-                                'attempt': attempt,
-                                'duration': order_duration,
-                                'contract_id': contract_id,
-                                'position_side': position_side,
-                                'position_size': position_size,
-                                'best_bid': locals().get('best_bid'),
-                                'best_ask': locals().get('best_ask')
-                            }
-                        )
-                        self.logger.log(f"Error placing stop-loss order after {order_duration:.3f}s: {order_error}", "ERROR")
-                        import traceback
-                        self.logger.log(f"Order placement traceback: {traceback.format_exc()}", "DEBUG")
-                        await asyncio.sleep(retry_interval)
-                        continue
-                    
-                    # 步骤4: 监控订单状态5秒
-                    monitor_start_time = time.time()
-                    try:
-                        filled = await self._monitor_stop_loss_order_with_timeout(exchange_client, order_id, timeout=5)
-                        monitor_duration = time.time() - monitor_start_time
-                        
-                        if filled:
-                            total_orders_filled += 1
-                            self.logger.log(f"Stop-loss order filled within 5 seconds after {monitor_duration:.3f}s monitoring: {order_id}", "INFO")
-                            continue  # 继续循环检查是否还有持仓
-                        else:
-                            self.logger.log(f"Stop-loss order not filled within 5 seconds after {monitor_duration:.3f}s monitoring, will retry", "WARNING")
-                            # 订单未成交，将在下次循环开始时取消所有挂单
-                            
-                    except Exception as e:
-                        monitor_duration = time.time() - monitor_start_time
-                        # 包装为自定义异常
-                        monitor_error = OrderMonitoringError(
-                            f"Failed to monitor order: {e}",
-                            order_id=order_id,
-                            context={
-                                'attempt': attempt,
-                                'duration': monitor_duration,
-                                'contract_id': contract_id,
-                                'timeout': 5
-                            }
-                        )
-                        self.logger.log(f"Error monitoring order {order_id} after {monitor_duration:.3f}s: {monitor_error}", "ERROR")
-                        import traceback
-                        self.logger.log(f"Order monitoring traceback: {traceback.format_exc()}", "DEBUG")
-                        # 继续下一次循环
-                        
-                except Exception as e:
-                    attempt_duration = time.time() - attempt_start_time
-                    self.logger.log(f"Error in stop-loss attempt {attempt} after {attempt_duration:.3f}s: {e}", "ERROR")
-                    import traceback
-                    self.logger.log(f"Attempt {attempt} traceback: {traceback.format_exc()}", "DEBUG")
-                    await asyncio.sleep(retry_interval)
-                
-                # 记录每次尝试的性能统计
-                attempt_duration = time.time() - attempt_start_time
-                if attempt_duration > 10:  # 如果单次尝试超过10秒则记录警告
-                    self.logger.log(f"Attempt {attempt} took {attempt_duration:.3f}s (longer than expected)", "WARNING")
-                else:
-                    self.logger.log(f"Attempt {attempt} completed in {attempt_duration:.3f}s", "DEBUG")
+            # 阶段1: 快速取消所有挂单（目标：5秒内完成）
+            cancel_start_time = time.time()
+            cancel_success = False
             
-            # 步骤5: 最终完整性检查 - 确认无未成交订单
-            integrity_start_time = time.time()
             try:
-                await self._final_integrity_check(exchange_client, contract_id)
-                integrity_duration = time.time() - integrity_start_time
-                self.logger.log(f"Final integrity check completed in {integrity_duration:.3f}s", "DEBUG")
+                self.logger.log("Phase 1: Fast cancellation of all pending orders", "INFO")
+                cancel_success = await self._fast_cancel_all_orders(exchange_client, contract_id, max_wait=self.config.cancel_timeout)
+                cancel_duration = time.time() - cancel_start_time
+                
+                if cancel_success:
+                    self.logger.log(f"Fast cancellation completed successfully in {cancel_duration:.3f}s", "INFO")
+                else:
+                    self.logger.log(f"Fast cancellation failed after {cancel_duration:.3f}s, switching to aggressive mode", "WARNING")
+                    
             except Exception as e:
-                integrity_duration = time.time() - integrity_start_time
-                self.logger.log(f"Error in final integrity check after {integrity_duration:.3f}s: {e}", "ERROR")
-                import traceback
-                self.logger.log(f"Integrity check traceback: {traceback.format_exc()}", "DEBUG")
+                cancel_duration = time.time() - cancel_start_time
+                self.logger.log(f"Error in fast cancellation after {cancel_duration:.3f}s: {e}", "ERROR")
+                cancel_success = False
+            
+            # 如果快速取消失败，启用激进模式
+            if not cancel_success:
+                try:
+                    self.logger.log("Switching to aggressive cancel mode", "WARNING")
+                    aggressive_result = await self._aggressive_cancel_mode(exchange_client, contract_id)
+                    if aggressive_result:
+                        self.logger.log("Aggressive cancel mode activated, proceeding with position closure", "INFO")
+                    else:
+                        self.logger.log("Aggressive cancel mode failed, but continuing with position closure", "WARNING")
+                except Exception as e:
+                    self.logger.log(f"Error in aggressive cancel mode: {e}", "ERROR")
+            
+            # 阶段2: 获取当前持仓（目标：3秒内完成）
+            position_start_time = time.time()
+            try:
+                self.logger.log("Phase 2: Reading current position", "INFO")
+                position_amt = await self._get_position_with_retry(exchange_client, max_retries=2)
+                position_duration = time.time() - position_start_time
+                
+                if position_amt is None:
+                    self.logger.log(f"Failed to read position after {position_duration:.3f}s", "ERROR")
+                    return False
+                
+                self.logger.log(f"Position read in {position_duration:.3f}s: {position_amt}", "INFO")
+                
+                if abs(position_amt) < 0.001:  # 基本无持仓
+                    execution_duration = time.time() - execution_start_time
+                    self.logger.log(f"No significant position remaining, rapid stop-loss completed in {execution_duration:.3f}s", "INFO")
+                    # 收尾：确保无挂单且无持仓
+                    try:
+                        await self._final_integrity_check(exchange_client, contract_id)
+                    except Exception as e:
+                        self.logger.log(f"Error during final integrity check: {e}", "WARNING")
+                    return True
+                    
+            except Exception as e:
+                position_duration = time.time() - position_start_time
+                self.logger.log(f"Error reading position after {position_duration:.3f}s: {e}", "ERROR")
+                return False
+            
+            # 阶段3: 一次性市价单平仓（目标：10秒内完成）
+            market_order_start_time = time.time()
+            try:
+                self.logger.log("Phase 3: Placing emergency market order for full position closure", "INFO")
+                position_size = abs(position_amt)
+                
+                order_success = await self._place_emergency_market_order(
+                    exchange_client, 
+                    contract_id, 
+                    position_size
+                )
+                
+                market_order_duration = time.time() - market_order_start_time
+                
+                if not order_success:
+                    self.logger.log(f"Failed to place emergency market order after {market_order_duration:.3f}s", "ERROR")
+                    try:
+                        await self._final_integrity_check(exchange_client, contract_id)
+                    except Exception as e:
+                        self.logger.log(f"Error during final integrity check: {e}", "WARNING")
+                    return False
+                
+                self.logger.log(f"Emergency market order placed successfully in {market_order_duration:.3f}s", "INFO")
+                
+            except Exception as e:
+                market_order_duration = time.time() - market_order_start_time
+                self.logger.log(f"Error placing emergency market order after {market_order_duration:.3f}s: {e}", "ERROR")
+                try:
+                    integrity_passed = await self._final_integrity_check(exchange_client, contract_id)
+                    if integrity_passed:
+                        self.logger.log("Stop-loss execution verified successful despite market order error", "INFO")
+                        self.stop_loss_executed = True
+                        return True
+                except Exception as ie:
+                    self.logger.log(f"Error during final integrity check: {ie}", "WARNING")
+                return False
+            
+            # 阶段4: 最终验证（目标：5秒内完成）
+            verification_start_time = time.time()
+            try:
+                self.logger.log("Phase 4: Final position verification", "INFO")
+                
+                # 等待一小段时间让订单处理
+                await asyncio.sleep(2)
+                
+                final_position = await self._get_position_with_retry(exchange_client, max_retries=2)
+                verification_duration = time.time() - verification_start_time
+                
+                if final_position is None:
+                    self.logger.log(f"Failed to verify final position after {verification_duration:.3f}s", "WARNING")
+                elif abs(final_position) < 0.001:
+                    self.logger.log(f"Position successfully closed, verified in {verification_duration:.3f}s", "INFO")
+                else:
+                    self.logger.log(f"Warning: Remaining position {final_position} after {verification_duration:.3f}s", "WARNING")
+                    
+            except Exception as e:
+                verification_duration = time.time() - verification_start_time
+                self.logger.log(f"Error in final verification after {verification_duration:.3f}s: {e}", "WARNING")
             
             # 记录执行总结
             total_execution_time = time.time() - execution_start_time
-            self.logger.log("Stop-loss execution completed successfully", "INFO")
-            self.logger.log(f"Execution summary: {total_execution_time:.3f}s total, {attempt} attempts, "
-                           f"{total_orders_placed} orders placed, {total_orders_filled} orders filled", "INFO")
+            self.logger.log("Rapid stop-loss execution completed", "INFO")
+            self.logger.log(f"Total execution time: {total_execution_time:.3f}s", "INFO")
             
-            self.stop_loss_executed = True
-            return True
+            # 性能评估
+            if total_execution_time <= 15:
+                self.logger.log("Excellent performance: Completed within 15 seconds", "INFO")
+            elif total_execution_time <= 30:
+                self.logger.log("Good performance: Completed within 30 seconds", "INFO")
+            else:
+                self.logger.log(f"Performance warning: Took {total_execution_time:.3f}s (target: 15-30s)", "WARNING")
+            
+            # 收尾：确保无挂单且无持仓
+            try:
+                integrity_passed = await self._final_integrity_check(exchange_client, contract_id)
+                if integrity_passed:
+                    self.logger.log("Stop-loss execution verified successful", "INFO")
+                    self.stop_loss_executed = True
+                    return True
+                else:
+                    self.logger.log("Final integrity check failed - stop-loss may not be complete", "WARNING")
+                    return False
+            except Exception as e:
+                self.logger.log(f"Error during final integrity check: {e}", "WARNING")
+                return False
                 
         except Exception as e:
             total_execution_time = time.time() - execution_start_time
-            self.logger.log(f"Critical error in auto stop-loss execution after {total_execution_time:.3f}s: {e}", "ERROR")
+            self.logger.log(f"Critical error in rapid stop-loss execution after {total_execution_time:.3f}s: {e}", "ERROR")
             import traceback
-            self.logger.log(f"Critical error traceback: {traceback.format_exc()}", "ERROR")
-            self.logger.log(f"Execution summary at failure: {total_execution_time:.3f}s total, {attempt} attempts, "
-                           f"{total_orders_placed} orders placed, {total_orders_filled} orders filled", "ERROR")
-            return None
+            self.logger.log(f"Rapid stop-loss execution traceback: {traceback.format_exc()}", "DEBUG")
+            try:
+                integrity_passed = await self._final_integrity_check(exchange_client, contract_id)
+                if integrity_passed:
+                    self.logger.log("Stop-loss execution verified successful despite execution error", "INFO")
+                    self.stop_loss_executed = True
+                    return True
+            except Exception as ie:
+                self.logger.log(f"Error during final integrity check: {ie}", "WARNING")
+            return False
     
     async def _monitor_stop_loss_order(self, exchange_client, order_id: str, timeout: int = None) -> bool:
         """
@@ -1116,6 +1040,285 @@ class DrawdownMonitor:
         except Exception as e:
             self.logger.log(f"Error cancelling all pending orders: {e}", "ERROR")
     
+    async def _fast_cancel_all_orders(self, exchange_client, contract_id: str, max_wait: int = 5) -> bool:
+        """
+        快速取消所有挂单：并行取消 + 快速验证
+        目标：5秒内完成所有取消操作
+        
+        Args:
+            exchange_client: 交易所客户端
+            contract_id: 合约ID
+            max_wait: 最大等待时间（秒）
+            
+        Returns:
+            bool: 是否成功取消所有订单
+        """
+        start_time = time.time()
+        
+        try:
+            # 第1步：获取所有活跃订单（1秒）
+            self.logger.log("Fast cancel: Getting active orders...", "INFO")
+            active_orders = await exchange_client.get_active_orders(contract_id)
+            
+            if not active_orders:
+                self.logger.log("Fast cancel: No orders to cancel", "INFO")
+                return True
+            
+            order_count = len(active_orders)
+            self.logger.log(f"Fast cancel: Found {order_count} orders, starting parallel cancellation", "INFO")
+            
+            # 第2步：并行发送取消请求（1-2秒）
+            cancel_tasks = []
+            for order in active_orders:
+                task = asyncio.create_task(exchange_client.cancel_order(order.order_id))
+                cancel_tasks.append(task)
+            
+            # 等待所有取消请求完成，但不超过2秒
+            try:
+                await asyncio.wait_for(asyncio.gather(*cancel_tasks, return_exceptions=True), timeout=2.0)
+                self.logger.log("Fast cancel: All cancel requests sent", "INFO")
+            except asyncio.TimeoutError:
+                self.logger.log("Fast cancel: Cancel requests timeout, continuing verification...", "WARNING")
+            
+            # 第3步：快速验证（最多2秒，每0.5秒检查一次）
+            for i in range(4):  # 最多检查4次
+                await asyncio.sleep(0.5)
+                remaining_orders = await exchange_client.get_active_orders(contract_id)
+                
+                if not remaining_orders:
+                    duration = time.time() - start_time
+                    self.logger.log(f"Fast cancel: All orders canceled successfully in {duration:.2f}s", "INFO")
+                    return True
+                
+                if i < 3:  # 不是最后一次检查
+                    self.logger.log(f"Fast cancel: {len(remaining_orders)} orders still active, checking again...", "DEBUG")
+            
+            # 最终检查失败
+            duration = time.time() - start_time
+            remaining_orders = await exchange_client.get_active_orders(contract_id)
+            self.logger.log(f"Fast cancel: WARNING - {len(remaining_orders)} orders still active after {duration:.2f}s", "WARNING")
+            return False
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            self.logger.log(f"Fast cancel: Error after {duration:.2f}s - {e}", "ERROR")
+            return False
+
+    async def _aggressive_cancel_mode(self, exchange_client, contract_id: str) -> bool:
+        """
+        激进取消模式：如果常规取消失败，直接进入平仓
+        适用于极端市场条件下的紧急止损
+        
+        Args:
+            exchange_client: 交易所客户端
+            contract_id: 合约ID
+            
+        Returns:
+            bool: 总是返回True，允许继续执行平仓流程
+        """
+        self.logger.log("AGGRESSIVE MODE: Skipping order cancellation due to emergency", "WARNING")
+        self.logger.log("Reason: Market emergency detected, proceeding directly to position closing", "WARNING")
+        
+        try:
+            # 记录未取消的订单（用于后续处理）
+            active_orders = await exchange_client.get_active_orders(contract_id)
+            if active_orders:
+                order_ids = [order.order_id for order in active_orders]
+                self.logger.log(f"Aggressive mode: {len(order_ids)} uncanceled orders: {order_ids}", "WARNING")
+                
+                # 异步继续尝试取消（不阻塞主流程）
+                asyncio.create_task(self._background_cancel_orders(exchange_client, order_ids))
+            else:
+                self.logger.log("Aggressive mode: No active orders found", "INFO")
+                
+        except Exception as e:
+            self.logger.log(f"Aggressive mode: Error checking orders - {e}", "ERROR")
+        
+        return True  # 直接返回成功，继续平仓流程
+
+    async def _background_cancel_orders(self, exchange_client, order_ids: list):
+        """
+        后台异步取消订单，不阻塞主流程
+        
+        Args:
+            exchange_client: 交易所客户端
+            order_ids: 订单ID列表
+        """
+        try:
+            self.logger.log(f"Background cancel: Attempting to cancel {len(order_ids)} orders", "INFO")
+            
+            for order_id in order_ids:
+                try:
+                    await exchange_client.cancel_order(order_id)
+                    self.logger.log(f"Background cancel: Order {order_id} canceled", "INFO")
+                except Exception as e:
+                    self.logger.log(f"Background cancel: Failed to cancel {order_id} - {e}", "WARNING")
+                    
+                # 小延迟避免过于频繁的请求
+                await asyncio.sleep(0.1)
+                
+        except Exception as e:
+            self.logger.log(f"Background cancel: Error in background cancellation - {e}", "ERROR")
+
+    async def _place_emergency_market_order(self, exchange_client, contract_id: str, position_size: float) -> bool:
+        """
+        紧急市价单平仓：一次性市价单关闭所有持仓
+        
+        Args:
+            exchange_client: 交易所客户端
+            contract_id: 合约ID
+            position_size: 持仓大小（正数为多头，负数为空头）
+            
+        Returns:
+            bool: 是否成功执行
+        """
+        start_time = time.time()
+        
+        try:
+            # 确定平仓方向和数量
+            if position_size > 0:
+                # 多头持仓，需要卖出平仓
+                side = "sell"
+                quantity = abs(position_size)
+            else:
+                # 空头持仓，需要买入平仓
+                side = "buy"
+                quantity = abs(position_size)
+            
+            self.logger.log(f"Emergency market order: {side} {quantity} to close position", "INFO")
+            
+            # 使用交易所支持的市价单接口立即平仓（兼容不同交易所的参数差异）
+            # 不同交易所的实现需兼容：这里调用统一的 place_market_order(direction)
+            # 优先尝试启用 WS 优先策略以降低 REST 轮询依赖（仅在交易所实现支持时生效）
+            try:
+                # 首先尝试完整参数（适用于 Lighter 等支持 reduce_only 的交易所）
+                order_result = await exchange_client.place_market_order(
+                    contract_id=contract_id,
+                    quantity=Decimal(str(quantity)),
+                    direction=side,
+                    prefer_ws=True,
+                    reduce_only=True
+                )
+                self.logger.log("Emergency market order: prefer_ws=True and reduce_only=True enabled", "DEBUG")
+            except TypeError as e:
+                if "reduce_only" in str(e):
+                    # GRVT 等交易所不支持 reduce_only 参数，尝试不带该参数
+                    try:
+                        order_result = await exchange_client.place_market_order(
+                            contract_id=contract_id,
+                            quantity=Decimal(str(quantity)),
+                            direction=side,
+                            prefer_ws=True
+                        )
+                        self.logger.log("Emergency market order: prefer_ws=True enabled (reduce_only not supported)", "DEBUG")
+                    except TypeError:
+                        # 交易所也不支持 prefer_ws 参数，使用最基本的调用方式
+                        order_result = await exchange_client.place_market_order(
+                            contract_id=contract_id,
+                            quantity=Decimal(str(quantity)),
+                            direction=side
+                        )
+                        self.logger.log("Emergency market order: basic parameters only (exchange compatibility mode)", "DEBUG")
+                else:
+                    # 其他 TypeError，可能是 prefer_ws 参数问题，尝试不带 prefer_ws
+                    try:
+                        order_result = await exchange_client.place_market_order(
+                            contract_id=contract_id,
+                            quantity=Decimal(str(quantity)),
+                            direction=side,
+                            reduce_only=True
+                        )
+                        self.logger.log("Emergency market order: reduce_only=True enabled (prefer_ws not supported)", "DEBUG")
+                    except TypeError:
+                        # 最后回退到最基本的调用方式
+                        order_result = await exchange_client.place_market_order(
+                            contract_id=contract_id,
+                            quantity=Decimal(str(quantity)),
+                            direction=side
+                        )
+                        self.logger.log("Emergency market order: basic parameters only (full compatibility mode)", "DEBUG")
+            
+            if not order_result.success:
+                duration = time.time() - start_time
+                self.logger.log(f"Emergency market order: Failed after {duration:.2f}s - {order_result.error_message}", "ERROR")
+                return False
+            
+            order_id = order_result.order_id
+            self.logger.log(f"Emergency market order: Order {order_id} placed successfully", "INFO")
+            
+            # 监控订单执行（最多等待30秒）
+            fill_success = await self._monitor_emergency_order(exchange_client, order_id, timeout=30)
+            
+            duration = time.time() - start_time
+            if fill_success:
+                self.logger.log(f"Emergency market order: Completed successfully in {duration:.2f}s", "INFO")
+                return True
+            else:
+                self.logger.log(f"Emergency market order: Failed to fill completely in {duration:.2f}s", "ERROR")
+                return False
+                
+        except Exception as e:
+            duration = time.time() - start_time
+            self.logger.log(f"Emergency market order: Error after {duration:.2f}s - {e}", "ERROR")
+            return False
+
+    async def _monitor_emergency_order(self, exchange_client, order_id: str, timeout: int = None) -> bool:
+        """
+        监控紧急市价单的执行状态
+        
+        Args:
+            exchange_client: 交易所客户端
+            order_id: 订单ID
+            timeout: 超时时间（秒，None时使用配置默认值）
+            
+        Returns:
+            bool: 是否完全成交
+        """
+        # 如果没有指定超时时间，使用配置中的设置
+        if timeout is None:
+            timeout = self.config.rapid_mode_timeout
+            
+        start_time = time.time()
+        check_interval = 1.0  # 每秒检查一次
+        
+        try:
+            while time.time() - start_time < timeout:
+                try:
+                    order_info = await exchange_client.get_order_info(order_id)
+                    
+                    if order_info and hasattr(order_info, 'status'):
+                        status = order_info.status.lower()
+                        
+                        if status in ['filled', 'completely_filled']:
+                            duration = time.time() - start_time
+                            self.logger.log(f"Emergency order {order_id}: Completely filled in {duration:.2f}s", "INFO")
+                            return True
+                        elif status in ['cancelled', 'rejected', 'expired']:
+                            duration = time.time() - start_time
+                            self.logger.log(f"Emergency order {order_id}: Failed with status {status} after {duration:.2f}s", "ERROR")
+                            return False
+                        elif status in ['partially_filled']:
+                            filled_qty = getattr(order_info, 'filled_quantity', 0)
+                            total_qty = getattr(order_info, 'quantity', 0)
+                            self.logger.log(f"Emergency order {order_id}: Partially filled {filled_qty}/{total_qty}", "INFO")
+                        else:
+                            self.logger.log(f"Emergency order {order_id}: Status {status}", "DEBUG")
+                    
+                except Exception as e:
+                    self.logger.log(f"Emergency order monitor: Error checking order {order_id} - {e}", "WARNING")
+                
+                await asyncio.sleep(check_interval)
+            
+            # 超时
+            duration = time.time() - start_time
+            self.logger.log(f"Emergency order {order_id}: Monitoring timeout after {duration:.2f}s", "ERROR")
+            return False
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            self.logger.log(f"Emergency order monitor: Error after {duration:.2f}s - {e}", "ERROR")
+            return False
+    
     async def _monitor_stop_loss_order_with_timeout(self, exchange_client, order_id: str, timeout: int = 5) -> bool:
         """
         监控止损订单状态，带超时机制
@@ -1306,40 +1509,48 @@ class DrawdownMonitor:
         self.logger.log(f"Failed to read position after {max_retries} attempts", "ERROR")
         return None
 
-    async def _final_integrity_check(self, exchange_client, contract_id: str):
+    async def _final_integrity_check(self, exchange_client, contract_id: str) -> bool:
         """
-        最终完整性检查 - 确认无未成交订单和持仓
+        简化的最终完整性检查 - 仅验证无活跃订单和持仓
         
         Args:
             exchange_client: 交易所客户端
             contract_id: 合约ID
+            
+        Returns:
+            bool: True表示检查通过（持仓=0且无活跃订单），False表示检查失败
         """
         try:
             self.logger.log("Performing final integrity check...", "INFO")
             
-            # 检查是否还有活跃订单
-            active_orders = await exchange_client.get_active_orders(contract_id)
-            if active_orders:
-                self.logger.log(f"Warning: {len(active_orders)} active orders still exist after stop-loss", "WARNING")
-                # 取消剩余订单
-                for order in active_orders:
-                    await self._cancel_order_safely(exchange_client, order.order_id)
-            else:
-                self.logger.log("No active orders remaining", "INFO")
+            # 检查活跃订单
+            try:
+                active_orders = await exchange_client.get_active_orders(contract_id)
+                active_count = len(active_orders) if active_orders else 0
+            except Exception as e:
+                self.logger.log(f"Final check: Error fetching active orders - {e}", "WARNING")
+                active_count = -1  # 未知状态
             
-            # 检查是否还有持仓（使用重试机制）
-            position_amt = await self._get_position_with_retry(exchange_client, max_retries=3)
-            if position_amt is not None and abs(position_amt) > 0.001:  # 考虑浮点精度
-                self.logger.log(f"Warning: Position still exists after stop-loss: {position_amt}", "WARNING")
-            elif position_amt is not None:
-                self.logger.log("No position remaining", "INFO")
-            else:
-                self.logger.log("Warning: Could not verify final position status", "WARNING")
+            # 检查持仓
+            try:
+                position_amt = await exchange_client.get_account_positions()
+                position_closed = abs(position_amt) <= 0.001
+            except Exception as e:
+                self.logger.log(f"Final check: Error fetching position - {e}", "WARNING")
+                position_amt = None
+                position_closed = False
             
-            self.logger.log("Final integrity check completed", "INFO")
+            # 判断检查结果
+            if active_count == 0 and position_closed:
+                self.logger.log(f"✅ Final integrity check PASSED: Position={position_amt}, Active orders={active_count}", "INFO")
+                return True
+            else:
+                self.logger.log(f"❌ Final integrity check FAILED: Position={position_amt}, Active orders={active_count}", "WARNING")
+                return False
             
         except Exception as e:
             self.logger.log(f"Error in final integrity check: {e}", "ERROR")
+            return False
     
     def get_status(self) -> Dict[str, Any]:
         """获取当前监控状态"""
@@ -1489,69 +1700,6 @@ class DrawdownMonitor:
                 context={'validation_step': 'unexpected_error', 'original_exception': str(e)}
             )
     
-    def _update_networth_history(self, current_networth: Decimal):
-        """
-        更新净值历史记录
-        
-        Args:
-            current_networth: 当前净值
-        """
-        try:
-            self.networth_history.append(current_networth)
-            
-            # 维护历史记录大小
-            if len(self.networth_history) > self.config.smoothing_window_size:
-                removed_count = len(self.networth_history) - self.config.smoothing_window_size
-                self.networth_history = self.networth_history[-self.config.smoothing_window_size:]
-                self.logger.log(f"Trimmed {removed_count} old networth records, history size: {len(self.networth_history)}", "DEBUG")
-            
-            self.logger.log(f"Added networth to history: ${current_networth}, history size: {len(self.networth_history)}", "DEBUG")
-            
-        except Exception as e:
-            data_error = DataIntegrityError(
-                f"Failed to update networth history: {e}",
-                data_type="networth_history",
-                context={
-                    'current_networth': str(current_networth),
-                    'history_size': len(self.networth_history) if hasattr(self, 'networth_history') else 0,
-                    'max_window_size': self.config.smoothing_window_size if hasattr(self, 'config') else None
-                }
-            )
-            self.logger.log(f"Error updating networth history: {data_error}", "ERROR")
-            raise data_error
-    
-    def _calculate_smoothed_networth(self) -> Decimal:
-        """
-        计算平滑后的净值
-        
-        Returns:
-            Decimal: 平滑后的净值
-        """
-        try:
-            if not self.networth_history:
-                raise ValueError("Networth history is empty")
-            
-            # 计算平均值
-            total = sum(self.networth_history)
-            count = len(self.networth_history)
-            smoothed = total / Decimal(count)
-            
-            self.logger.log(f"Smoothed networth calculation: sum=${total}, count={count}, result=${smoothed}", "DEBUG")
-            
-            return smoothed
-            
-        except Exception as e:
-            data_error = DataIntegrityError(
-                f"Failed to calculate smoothed networth: {e}",
-                data_type="networth_calculation",
-                context={
-                    'history_size': len(self.networth_history) if hasattr(self, 'networth_history') else 0,
-                    'history_empty': not bool(self.networth_history) if hasattr(self, 'networth_history') else True,
-                    'smoothing_window_size': self.config.smoothing_window_size if hasattr(self, 'config') else None
-                }
-            )
-            self.logger.log(f"Error calculating smoothed networth: {data_error}", "ERROR")
-            raise data_error
     
     def _log_networth_change(self, previous_networth: Optional[Decimal], current_networth: Decimal):
         """
@@ -1614,21 +1762,19 @@ class DrawdownMonitor:
             self.logger.log(f"Error updating session peak: {e}", "ERROR")
             raise
     
-    def _log_detailed_status(self, current_networth: Decimal, smoothed_networth: Decimal, 
+    def _log_detailed_status(self, current_networth: Decimal, 
                            drawdown_rate: Decimal, level):
         """
         记录详细的状态信息
         
         Args:
             current_networth: 当前净值
-            smoothed_networth: 平滑后的净值
             drawdown_rate: 回撤率
             level: 当前回撤级别
         """
         try:
             # 基本状态信息
-            status_info = (f"Net worth status - Raw: ${current_networth}, "
-                          f"Smoothed: ${smoothed_networth}, "
+            status_info = (f"Net worth status - Current: ${current_networth}, "
                           f"Peak: ${self.session_peak_networth}, "
                           f"Drawdown: {drawdown_rate*100:.2f}%, "
                           f"Level: {level.value}")
@@ -1636,7 +1782,7 @@ class DrawdownMonitor:
             self.logger.log(status_info, "INFO")
             
             # 详细调试信息
-            debug_info = (f"Detailed status - History size: {len(self.networth_history)}, "
+            debug_info = (f"Detailed status - "
                          f"Initial: ${self.initial_networth}, "
                          f"Monitoring: {self.is_monitoring}, "
                          f"Stop loss triggered: {self.stop_loss_triggered}")
