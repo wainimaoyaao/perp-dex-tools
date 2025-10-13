@@ -18,7 +18,7 @@
 | `PARADEX_GRID_STEP` | `--grid-step` | `"0.1"` | 网格步长百分比 |
 | `PARADEX_STOP_PRICE` | `--stop-price` | `"-1"` | 停止价格 (-1表示禁用) |
 | `PARADEX_PAUSE_PRICE` | `--pause-price` | `"-1"` | 暂停价格 (-1表示禁用) |
-| `PARADEX_ASTER_BOOST` | `--aster-boost` | `"false"` | 是否启用Aster加速 |
+| `PARADEX_ASTER_BOOST` | `--aster-boost` | `"false"` | 是否启用Boost加速模式 |
 | `PARADEX_ENV_FILE` | `--env-file` | `".env"` | 环境变量文件路径 |
 | `PARADEX_ENABLE_DRAWDOWN_MONITOR` | `--enable-drawdown-monitor` | `"true"` | 是否启用回撤监控 |
 | `PARADEX_DRAWDOWN_LIGHT_THRESHOLD` | `--drawdown-light-threshold` | `"5"` | 轻度回撤阈值(%) |
@@ -38,7 +38,7 @@
 | `GRVT_GRID_STEP` | `--grid-step` | `"0.1"` | 网格步长百分比 |
 | `GRVT_STOP_PRICE` | `--stop-price` | `"-1"` | 停止价格 (-1表示禁用) |
 | `GRVT_PAUSE_PRICE` | `--pause-price` | `"-1"` | 暂停价格 (-1表示禁用) |
-| `GRVT_ASTER_BOOST` | `--aster-boost` | `"false"` | 是否启用Aster加速 |
+| `GRVT_ASTER_BOOST` | `--aster-boost` | `"false"` | 是否启用Boost加速模式 |
 | `GRVT_ENV_FILE` | `--env-file` | `".env"` | 环境变量文件路径 |
 | `GRVT_ENABLE_DRAWDOWN_MONITOR` | `--enable-drawdown-monitor` | `"true"` | 是否启用回撤监控 |
 | `GRVT_DRAWDOWN_LIGHT_THRESHOLD` | `--drawdown-light-threshold` | `"5"` | 轻度回撤阈值(%) |

@@ -955,6 +955,12 @@ BTC：
 python runbot.py --exchange grvt --ticker BTC --quantity 0.05 --take-profit 0.02 --max-orders 40 --wait-time 450
 ```
 
+BTC（启用 Boost 模式）：
+
+```bash
+python runbot.py --exchange grvt --ticker BTC --direction buy --quantity 0.05 --aster-boost
+```
+
 ### 回撤监控详细使用指南：
 
 #### 📋 回撤参数
@@ -1191,7 +1197,7 @@ config = DrawdownConfig(
 - `--grid-step`: 与下一个平仓订单价格的最小距离百分比（默认：-100，表示无限制）
 - `--stop-price`: 价格止损触发点。当 `direction` 是 'buy' 时，当 price >= stop-price 时触发止损并退出程序；'sell' 逻辑相反（默认：-1，表示不启用价格止损）。触发时会执行智能止损流程，确保持仓安全平仓。参数的目的是防止订单被挂在"你认为的开多高点或开空低点"。
 - `--pause-price`: 当 `direction` 是 'buy' 时，当 price >= pause-price 时暂停交易，并在价格回到 pause-price 以下时重新开始交易；'sell' 逻辑相反（默认：-1，表示不会因为价格原因停止交易），参数的目的是防止订单被挂在”你认为的开多高点或开空低点“。
-- `--aster-boost`: 启用 Aster 交易所的 Boost 模式进行交易量提升（仅适用于 aster 交易所）
+- `--aster-boost`: 启用 Boost 模式进行交易量提升（支持 aster、grvt 交易所）
 - `--enable-drawdown-monitor`: 启用回撤监控功能（可选）
 - `--drawdown-light-threshold`: 轻微回撤阈值，百分比（默认 5.0）
 - `--drawdown-medium-threshold`: 中等回撤阈值，百分比（默认 8.0）

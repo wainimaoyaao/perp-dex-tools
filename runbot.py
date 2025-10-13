@@ -102,9 +102,11 @@ async def main():
     # Setup logging first
     setup_logging("WARNING")
 
-    # Validate aster-boost can only be used with aster exchange
-    if args.aster_boost and args.exchange.lower() != 'aster':
-        print(f"Error: --aster-boost can only be used when --exchange is 'aster'. "
+    # Note: aster-boost can now be used with multiple exchanges that support market orders
+    # Currently supported: aster, grvt
+    supported_boost_exchanges = ['aster', 'grvt']
+    if args.aster_boost and args.exchange.lower() not in supported_boost_exchanges:
+        print(f"Error: --aster-boost is only supported for exchanges: {', '.join(supported_boost_exchanges)}. "
               f"Current exchange: {args.exchange}")
         sys.exit(1)
 
