@@ -289,6 +289,12 @@ class TradingBot:
                     self.config.quantity,
                     self.config.close_order_side
                 )
+                
+                if not close_order_result.success:
+                    self.logger.log(f"[CLOSE] Failed to place market order: {close_order_result.error_message}", "ERROR")
+                    raise Exception(f"[CLOSE] Failed to place market order: {close_order_result.error_message}")
+                
+                return True
             else:
                 self.last_open_order_time = time.time()
                 # Place close order
@@ -414,12 +420,15 @@ class TradingBot:
                 self.logger.log(f"[CLOSE] Processing partial fill: {self.order_filled_amount} @ {filled_price}", "INFO")
                 close_side = self.config.close_order_side
                 if self.config.aster_boost:
-                    close_order_result = await self.exchange_client.place_close_order(
+                    close_order_result = await self.exchange_client.place_market_order(
                         self.config.contract_id,
                         self.order_filled_amount,
-                        filled_price,
                         close_side
                     )
+                    if not close_order_result.success:
+                        self.logger.log(f"[CLOSE] Failed to place market order for partial fill: {close_order_result.error_message}", "ERROR")
+                        raise Exception(f"[CLOSE] Failed to place market order for partial fill: {close_order_result.error_message}")
+                    return True
                 else:
                     if close_side == 'sell':
                         close_price = filled_price * (1 + self.config.take_profit/100)
