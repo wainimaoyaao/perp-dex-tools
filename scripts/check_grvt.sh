@@ -143,6 +143,11 @@ echo -e "${CYAN}   止损价格: $GRVT_STOP_PRICE${NC}"
 echo -e "${CYAN}   暂停价格: $GRVT_PAUSE_PRICE${NC}"
 echo -e "${CYAN}   Aster 加速: $GRVT_ASTER_BOOST${NC}"
 echo -e "${CYAN}   回撤监控: $GRVT_ENABLE_DRAWDOWN_MONITOR${NC}"
+echo -e "${CYAN}   对冲功能: $GRVT_ENABLE_HEDGE${NC}"
+if [ "$GRVT_ENABLE_HEDGE" = "true" ]; then
+    echo -e "${CYAN}   对冲交易所: $GRVT_HEDGE_EXCHANGE${NC}"
+    echo -e "${CYAN}   对冲延迟: $GRVT_HEDGE_DELAY 秒${NC}"
+fi
 
 # 检查运行中的 GRVT 进程
 echo -e "\n${BOLD}${GREEN}=== GRVT 进程状态 ===${NC}"
@@ -229,6 +234,44 @@ if [ -f "$GRVT_LOG_FILE" ]; then
     
 else
     log_issue "warning" "GRVT 日志文件不存在: $GRVT_LOG_FILE"
+fi
+
+# 检查 GRVT 对冲状态
+echo -e "\n${BOLD}${GREEN}=== GRVT 对冲状态 ===${NC}"
+if [ "$GRVT_ENABLE_HEDGE" = "true" ]; then
+    log_success "GRVT 对冲功能已启用"
+    echo -e "${CYAN}   对冲交易所: $GRVT_HEDGE_EXCHANGE${NC}"
+    echo -e "${CYAN}   对冲延迟: $GRVT_HEDGE_DELAY 秒${NC}"
+    
+    if [ -f "$GRVT_LOG_FILE" ]; then
+        # 检查对冲连接状态
+        hedge_connection=$(tail -50 "$GRVT_LOG_FILE" | grep -i "hedge.*connect\|hedge.*init\|hedge.*ready" | tail -1)
+        if [ -n "$hedge_connection" ]; then
+            echo -e "${CYAN}   对冲连接: $hedge_connection${NC}"
+        else
+            log_issue "warning" "未检测到对冲连接信息"
+        fi
+        
+        # 检查对冲订单状态
+        hedge_orders=$(tail -100 "$GRVT_LOG_FILE" | grep -i "hedge.*order\|hedge.*position" | wc -l)
+        if [ -n "$hedge_orders" ] && [ "$hedge_orders" -gt 0 ]; then
+            echo -e "${CYAN}   对冲订单活动: 最近100行中有 $hedge_orders 条对冲相关记录${NC}"
+        else
+            log_issue "info" "未检测到对冲订单活动"
+        fi
+        
+        # 检查对冲错误
+        hedge_errors=$(tail -100 "$GRVT_LOG_FILE" | grep -i "hedge.*error\|hedge.*failed\|hedge.*exception" | wc -l)
+        if [ -n "$hedge_errors" ] && [ "$hedge_errors" -gt 0 ]; then
+            log_issue "warning" "检测到 $hedge_errors 个对冲相关错误"
+            echo -e "${YELLOW}   最新对冲错误:${NC}"
+            tail -100 "$GRVT_LOG_FILE" | grep -i "hedge.*error\|hedge.*failed\|hedge.*exception" | tail -3 | sed 's/^/     /'
+        else
+            echo -e "${CYAN}   ✅ 对冲功能无错误记录${NC}"
+        fi
+    fi
+else
+    log_issue "info" "GRVT 对冲功能未启用"
 fi
 
 # 检查 GRVT 回撤监控状态

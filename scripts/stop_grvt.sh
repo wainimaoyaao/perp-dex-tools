@@ -59,11 +59,23 @@ check_grvt_processes() {
     # 查找包含 "grvt" 的 runbot.py 进程
     GRVT_PIDS=$(pgrep -f "runbot.py.*grvt" 2>/dev/null)
     
+    # 如果启用了对冲功能，也检查对冲相关进程
+    if [ "$GRVT_ENABLE_HEDGE" = "true" ]; then
+        log_action "INFO" "对冲功能已启用，检查对冲相关进程..."
+        # 查找可能的对冲进程（基于对冲交易所）
+        HEDGE_PIDS=$(pgrep -f "runbot.py.*${GRVT_HEDGE_EXCHANGE}" 2>/dev/null)
+        if [ -n "$HEDGE_PIDS" ]; then
+            log_action "INFO" "发现对冲相关进程: $HEDGE_PIDS"
+            # 将对冲进程PID添加到GRVT_PIDS中
+            GRVT_PIDS="$GRVT_PIDS $HEDGE_PIDS"
+        fi
+    fi
+    
     if [ -z "$GRVT_PIDS" ]; then
         log_action "INFO" "未发现运行中的 GRVT 机器人进程"
         return 1
     else
-        log_action "INFO" "发现 GRVT 机器人进程: $GRVT_PIDS"
+        log_action "INFO" "发现 GRVT 相关进程: $GRVT_PIDS"
         return 0
     fi
 }
@@ -155,10 +167,16 @@ main() {
     GRVT_PIDS=$(pgrep -f "runbot.py.*grvt" 2>/dev/null)
     
     # 显示将要停止的进程
-    echo -e "${YELLOW}将要停止的 GRVT 进程:${NC}"
+    echo -e "${YELLOW}将要停止的 GRVT 相关进程:${NC}"
     for pid in $GRVT_PIDS; do
         cmd=$(ps -p "$pid" -o command= 2>/dev/null)
-        echo -e "${CYAN}  PID: $pid - $cmd${NC}"
+        if echo "$cmd" | grep -q "grvt"; then
+            echo -e "${CYAN}  PID: $pid - [主进程] $cmd${NC}"
+        elif [ "$GRVT_ENABLE_HEDGE" = "true" ] && echo "$cmd" | grep -q "$GRVT_HEDGE_EXCHANGE"; then
+            echo -e "${CYAN}  PID: $pid - [对冲进程] $cmd${NC}"
+        else
+            echo -e "${CYAN}  PID: $pid - $cmd${NC}"
+        fi
     done
     
     # 询问用户确认
@@ -180,12 +198,16 @@ main() {
     # 最终检查
     sleep 2
     if check_grvt_processes; then
-        log_action "ERROR" "仍有 GRVT 进程在运行"
+        log_action "ERROR" "仍有 GRVT 相关进程在运行"
         echo -e "${RED}停止失败！仍有进程在运行${NC}"
         exit 1
     else
-        log_action "SUCCESS" "所有 GRVT 进程已成功停止"
-        echo -e "${GREEN}✅ GRVT 机器人已成功停止${NC}"
+        log_action "SUCCESS" "所有 GRVT 相关进程已成功停止"
+        if [ "$GRVT_ENABLE_HEDGE" = "true" ]; then
+            echo -e "${GREEN}✅ GRVT 机器人及对冲进程已成功停止${NC}"
+        else
+            echo -e "${GREEN}✅ GRVT 机器人已成功停止${NC}"
+        fi
     fi
     
     # 显示日志信息

@@ -115,6 +115,11 @@ if [ "$GRVT_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
     echo -e "  中度回撤阈值: $GRVT_DRAWDOWN_MEDIUM_THRESHOLD%"
     echo -e "  严重回撤阈值: $GRVT_DRAWDOWN_SEVERE_THRESHOLD%"
 fi
+echo -e "  对冲功能: $GRVT_ENABLE_HEDGE"
+if [ "$GRVT_ENABLE_HEDGE" = "true" ]; then
+    echo -e "  对冲交易所: $GRVT_HEDGE_EXCHANGE"
+    echo -e "  对冲延迟: $GRVT_HEDGE_DELAY 秒"
+fi
 
 # 备份旧日志文件
 if [ -f "$GRVT_LOG_FILE" ]; then
@@ -132,6 +137,11 @@ fi
 
 if [ "$GRVT_ENABLE_DRAWDOWN_MONITOR" = "true" ]; then
     START_CMD="$START_CMD --enable-drawdown-monitor --drawdown-light-threshold $GRVT_DRAWDOWN_LIGHT_THRESHOLD --drawdown-medium-threshold $GRVT_DRAWDOWN_MEDIUM_THRESHOLD --drawdown-severe-threshold $GRVT_DRAWDOWN_SEVERE_THRESHOLD"
+fi
+
+# 添加对冲参数
+if [ "$GRVT_ENABLE_HEDGE" = "true" ]; then
+    START_CMD="$START_CMD --enable-hedge --hedge-exchange $GRVT_HEDGE_EXCHANGE --hedge-delay $GRVT_HEDGE_DELAY"
 fi
 
 # 启动机器人

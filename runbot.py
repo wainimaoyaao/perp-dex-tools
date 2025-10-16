@@ -61,6 +61,15 @@ def parse_arguments():
     parser.add_argument('--drawdown-severe-threshold', type=Decimal, default=Decimal(12),
                         help='Severe drawdown stop-loss threshold in percentage (default: 12)')
 
+    # Hedge trading parameters
+    parser.add_argument('--enable-hedge', action='store_true',
+                        help='Enable hedge trading across multiple exchanges (default: False)')
+    parser.add_argument('--hedge-exchange', type=str, default='lighter',
+                        choices=ExchangeFactory.get_supported_exchanges(),
+                        help='Exchange to use for hedge trading (default: lighter). '
+                             f'Available: {", ".join(ExchangeFactory.get_supported_exchanges())}')
+    parser.add_argument('--hedge-delay', type=float, default=0.1,
+                        help='Delay in seconds before executing hedge orders (default: 0.1)')
 
     return parser.parse_args()
 
@@ -110,6 +119,16 @@ async def main():
               f"Current exchange: {args.exchange}")
         sys.exit(1)
 
+    # Validate hedge configuration
+    if args.enable_hedge:
+        if args.exchange.lower() == args.hedge_exchange.lower():
+            print(f"Error: Hedge exchange must be different from main exchange. "
+                  f"Main: {args.exchange}, Hedge: {args.hedge_exchange}")
+            sys.exit(1)
+        if args.hedge_delay < 0:
+            print(f"Error: Hedge delay must be non-negative. Current: {args.hedge_delay}")
+            sys.exit(1)
+
     env_path = Path(args.env_file)
     if not env_path.exists():
         print(f"Env file not find: {env_path.resolve()}")
@@ -134,7 +153,10 @@ async def main():
         enable_drawdown_monitor=args.enable_drawdown_monitor,
         drawdown_light_threshold=args.drawdown_light_threshold,
         drawdown_medium_threshold=args.drawdown_medium_threshold,
-        drawdown_severe_threshold=args.drawdown_severe_threshold
+        drawdown_severe_threshold=args.drawdown_severe_threshold,
+        enable_hedge=args.enable_hedge,
+        hedge_exchange=args.hedge_exchange.lower(),
+        hedge_delay=args.hedge_delay
     )
 
     # Create and run the bot

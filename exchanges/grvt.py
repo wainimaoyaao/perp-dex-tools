@@ -60,6 +60,11 @@ class GrvtClient(BaseExchangeClient):
         self._ws_update_event = asyncio.Event()
         self._last_order_update: Optional[Dict[str, Any]] = None
 
+        # Networth caching mechanism (similar to Lighter)
+        self._networth_cache: Optional[Decimal] = None
+        self._networth_cache_time: Optional[float] = None
+        self._networth_cache_duration = 5.0  # Cache for 5 seconds
+
     def _initialize_grvt_clients(self) -> None:
         """Initialize the GRVT REST and WebSocket clients."""
         try:
@@ -258,19 +263,29 @@ class GrvtClient(BaseExchangeClient):
     @query_retry(reraise=True)
     async def fetch_bbo_prices(self, contract_id: str) -> Tuple[Decimal, Decimal]:
         """Fetch best bid and offer prices for a contract."""
-        # Get order book from GRVT
-        order_book = self.rest_client.fetch_order_book(contract_id, limit=10)
+        try:
+            # Get order book from GRVT
+            order_book = self.rest_client.fetch_order_book(contract_id, limit=10)
 
-        if not order_book or 'bids' not in order_book or 'asks' not in order_book:
-            raise ValueError(f"Unable to get order book: {order_book}")
+            if not order_book or 'bids' not in order_book or 'asks' not in order_book:
+                raise ValueError(f"Unable to get order book: {order_book}")
 
-        bids = order_book.get('bids', [])
-        asks = order_book.get('asks', [])
+            bids = order_book.get('bids', [])
+            asks = order_book.get('asks', [])
 
-        best_bid = Decimal(bids[0]['price']) if bids and len(bids) > 0 else Decimal(0)
-        best_ask = Decimal(asks[0]['price']) if asks and len(asks) > 0 else Decimal(0)
+            if not bids or not asks:
+                raise ValueError(f"Empty bids or asks in order book")
 
-        return best_bid, best_ask
+            best_bid = Decimal(bids[0]['price']) if bids and len(bids) > 0 else Decimal(0)
+            best_ask = Decimal(asks[0]['price']) if asks and len(asks) > 0 else Decimal(0)
+
+            if best_bid <= 0 or best_ask <= 0:
+                raise ValueError(f"Invalid BBO prices: bid={best_bid}, ask={best_ask}")
+
+            return best_bid, best_ask
+        except Exception as e:
+            self.logger.log(f"Error fetching BBO prices for {contract_id}: {e}", "ERROR")
+            raise
 
     async def place_post_only_order(self, contract_id: str, quantity: Decimal, price: Decimal,
                                     side: str) -> OrderResult:
@@ -336,7 +351,11 @@ class GrvtClient(BaseExchangeClient):
                     raise Exception(f"[OPEN] ERROR: Active open orders abnormal: {active_open_orders}")
 
             # Get current market prices
-            best_bid, best_ask = await self.fetch_bbo_prices(contract_id)
+            try:
+                best_bid, best_ask = await self.fetch_bbo_prices(contract_id)
+            except Exception as e:
+                self.logger.log(f"[OPEN] Error fetching BBO prices: {e}", "ERROR")
+                return OrderResult(success=False, error_message=f'Failed to fetch BBO prices: {e}')
 
             if best_bid <= 0 or best_ask <= 0:
                 return OrderResult(success=False, error_message='Invalid bid/ask prices')
@@ -759,11 +778,16 @@ class GrvtClient(BaseExchangeClient):
             # Get account summary which includes equity and unrealized PnL
             account_summary = self.rest_client.get_account_summary(type='sub-account')
             
-            # Extract equity from account summary
-            # GRVT account summary typically includes 'equity' field
+            # Extract equity from account summary - use correct field name 'total_equity'
+            if 'total_equity' in account_summary:
+                equity = Decimal(str(account_summary['total_equity']))
+                self.logger.info(f"Account equity from summary: {equity}")
+                return equity
+            
+            # Fallback: try legacy 'equity' field name
             if 'equity' in account_summary:
                 equity = Decimal(str(account_summary['equity']))
-                self.logger.info(f"Account equity from summary: {equity}")
+                self.logger.info(f"Account equity from summary (legacy): {equity}")
                 return equity
             
             # Fallback: try to get balance and calculate equity
@@ -802,57 +826,106 @@ class GrvtClient(BaseExchangeClient):
             return Decimal('0')
 
     async def get_account_networth(self) -> Decimal:
-        """
-        Get account net worth (account balance + unrealized PnL).
+        """Get account net worth with caching mechanism."""
+        current_time = time.time()
         
-        Returns:
-            Decimal: Account net worth for drawdown monitoring
-        """
+        # Check if we have a valid cached value
+        if (self._networth_cache is not None and 
+            self._networth_cache_time is not None and 
+            current_time - self._networth_cache_time < self._networth_cache_duration):
+            self.logger.debug(f"Using cached networth: {self._networth_cache}")
+            return self._networth_cache
+        
         try:
-            # 直接调用get_account_equity的内部逻辑，避免query_retry装饰器的reraise
-            # Get account summary which includes equity and unrealized PnL
-            account_summary = self.rest_client.get_account_summary(type='sub-account')
+            # Calculate real-time networth
+            networth = await self._calculate_realtime_networth()
             
-            # Extract equity from account summary
-            # GRVT account summary typically includes 'equity' field
-            if 'equity' in account_summary:
-                equity = Decimal(str(account_summary['equity']))
-                self.logger.info(f"Account net worth from summary: {equity}")
-                return equity
+            # Update cache
+            self._networth_cache = networth
+            self._networth_cache_time = current_time
             
-            # Fallback: try to get balance and calculate equity
-            balance_info = self.rest_client.fetch_balance(type='sub-account')
-            
-            # CCXT format balance includes 'total' which represents equity
-            if 'total' in balance_info and 'USDT' in balance_info['total']:
-                equity = Decimal(str(balance_info['total']['USDT']))
-                self.logger.info(f"Account net worth from balance total: {equity}")
-                return equity
-            
-            # Another fallback: calculate from positions
-            positions = self.rest_client.fetch_positions()
-            total_equity = Decimal('0')
-            
-            for position in positions:
-                # Add unrealized PnL from each position
-                if 'unrealizedPnl' in position:
-                    unrealized_pnl = Decimal(str(position.get('unrealizedPnl', 0)))
-                    total_equity += unrealized_pnl
-                elif 'unrealized_pnl' in position:
-                    unrealized_pnl = Decimal(str(position.get('unrealized_pnl', 0)))
-                    total_equity += unrealized_pnl
-            
-            # Add available balance
-            if 'free' in balance_info and 'USDT' in balance_info['free']:
-                free_balance = Decimal(str(balance_info['free']['USDT']))
-                total_equity += free_balance
-            
-            self.logger.info(f"Calculated account net worth: {total_equity}")
-            return total_equity
+            self.logger.info(f"Calculated and cached new networth: {networth}")
+            return networth
             
         except Exception as e:
-            self.logger.error(f"Error fetching account net worth: {e}")
+            self.logger.error(f"Failed to calculate networth: {e}")
+            # Return cached value if available, even if expired
+            if self._networth_cache is not None:
+                self.logger.warning(f"Returning expired cached networth: {self._networth_cache}")
+                return self._networth_cache
             return Decimal('0')
+    
+    async def _calculate_realtime_networth(self) -> Decimal:
+        """Calculate real-time networth using account summary for more accurate data."""
+        try:
+            # Use get_account_summary for comprehensive account information
+            account_summary = self.rest_client.get_account_summary(type='sub-account')
+            
+            # Extract total equity which already includes unrealized PnL
+            if 'total_equity' in account_summary:
+                total_equity = Decimal(str(account_summary['total_equity']))
+                unrealized_pnl = Decimal(str(account_summary.get('unrealized_pnl', '0')))
+                available_balance = Decimal(str(account_summary.get('available_balance', '0')))
+                
+                self.logger.info(f"Account summary - Total equity: {total_equity}, "
+                               f"Unrealized PnL: {unrealized_pnl}, Available balance: {available_balance}")
+                
+                # total_equity already includes unrealized PnL, so we can return it directly
+                self.logger.info(f"Networth from account summary: {total_equity}")
+                return total_equity
+            
+            # Fallback to the original method if account summary doesn't have expected fields
+            self.logger.warning("Account summary missing total_equity field, falling back to balance + positions calculation")
+            
+            # Get available balance (USDT)
+            balance = await self.get_account_balance()
+            self.logger.debug(f"Available balance: {balance}")
+            
+            # Get all positions and calculate total unrealized PnL
+            total_unrealized_pnl = Decimal('0')
+            
+            try:
+                self.logger.debug(f"Attempting to fetch positions with trading_account_id: {self.trading_account_id}")
+                
+                # fetch_positions() returns a list directly, not a dict with 'result' key
+                positions = self.rest_client.fetch_positions()
+                
+                self.logger.debug(f"fetch_positions returned: type={type(positions)}, length={len(positions) if positions else 0}")
+                
+                if positions:
+                    self.logger.debug(f"Received {len(positions)} positions from API")
+                    
+                    for position in positions:
+                        self.logger.debug(f"Raw position data: {position}")
+                        
+                        if position.get('size', '0') != '0':  # Only consider non-zero positions
+                            unrealized_pnl = Decimal(str(position.get('unrealizedPnl', '0')))
+                            total_unrealized_pnl += unrealized_pnl
+                            
+                            self.logger.debug(f"Position {position.get('instrument', 'unknown')}: "
+                                            f"size={position.get('size', '0')}, "
+                                            f"unrealizedPnl={unrealized_pnl}")
+                    
+                    self.logger.debug(f"Total unrealized PnL: {total_unrealized_pnl}")
+                else:
+                    self.logger.warning("No positions data received - positions list is empty")
+                    
+            except Exception as e:
+                self.logger.error(f"Failed to get positions for PnL calculation: {e}")
+                self.logger.error(f"Exception type: {type(e)}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                # Continue with balance only if positions fetch fails
+            
+            # Calculate total networth: balance + unrealized PnL
+            networth = balance + total_unrealized_pnl
+            
+            self.logger.info(f"Networth calculation: balance={balance} + unrealized_pnl={total_unrealized_pnl} = {networth}")
+            return networth
+            
+        except Exception as e:
+            self.logger.error(f"Error in _calculate_realtime_networth: {e}")
+            raise
 
     @query_retry(reraise=True)
     async def get_unrealized_pnl_and_margin(self) -> Tuple[Decimal, Decimal]:
@@ -863,6 +936,21 @@ class GrvtClient(BaseExchangeClient):
             Tuple[Decimal, Decimal]: (总未实现盈亏, 总初始保证金)
         """
         try:
+            # 优先使用 get_account_summary 获取准确的数据
+            account_summary = self.rest_client.get_account_summary(type='sub-account')
+            
+            if 'unrealized_pnl' in account_summary and 'initial_margin' in account_summary:
+                total_unrealized_pnl = Decimal(str(account_summary['unrealized_pnl']))
+                total_initial_margin = Decimal(str(account_summary['initial_margin']))
+                
+                self.logger.info(f"From account summary - Unrealized PnL: {total_unrealized_pnl}, "
+                               f"Initial margin: {total_initial_margin}")
+                
+                return total_unrealized_pnl, total_initial_margin
+            
+            # 回退到从仓位信息计算
+            self.logger.warning("Account summary missing unrealized_pnl or initial_margin, falling back to positions calculation")
+            
             # 获取所有仓位信息
             positions = self.rest_client.fetch_positions()
             
