@@ -655,26 +655,18 @@ class LighterClient(BaseExchangeClient):
         self.current_order_client_id = client_order_index
         self.current_order = None
 
-        # Get current market prices for avg_execution_price calculation
+        # Use the official SDK create_market_order_limited_slippage method for better slippage control
+        # Set reasonable slippage tolerance (0.2% = 0.002)
+        max_slippage = 0.003  # 0.2% slippage tolerance
+        
         try:
-            bid_price, ask_price = await self.fetch_bbo_prices(contract_id)
-            # For market orders, use the price we expect to get filled at
-            # Buy orders get filled at ask price, sell orders at bid price
-            avg_execution_price = ask_price if direction.lower() == 'buy' else bid_price
-            if avg_execution_price <= 0:
-                return OrderResult(success=False, error_message=f"Invalid market price: {avg_execution_price}")
-        except Exception as e:
-            return OrderResult(success=False, error_message=f"Failed to fetch market price: {e}")
+            self.logger.info(f"[MARKET] Placing {direction} market order for {quantity} with {max_slippage*100}% slippage tolerance")
             
-        # Use the official SDK create_market_order method
-        try:
-            self.logger.info(f"[MARKET] Placing {direction} market order for {quantity} at avg_execution_price: {avg_execution_price}")
-            
-            result = await self.lighter_client.create_market_order(
+            result = await self.lighter_client.create_market_order_limited_slippage(
                 market_index=self.config.contract_id,
                 client_order_index=client_order_index,
                 base_amount=int(quantity * self.base_amount_multiplier),
-                avg_execution_price=int(avg_execution_price * self.price_multiplier),
+                max_slippage=max_slippage,
                 is_ask=is_ask,
                 reduce_only=reduce_only
             )
@@ -1142,3 +1134,109 @@ class LighterClient(BaseExchangeClient):
             else:
                 self.logger.log("No cached value available, returning 0", "WARNING")
                 return Decimal('0')
+
+    async def place_market_order_with_retry(self, contract_id: str, quantity: Decimal, direction: str, 
+                                          max_retries: int = 5, initial_delay: float = 1.0) -> OrderResult:
+        """
+        Place a market order with built-in retry mechanism for hedge position closing.
+        
+        This method encapsulates the retry logic specifically for Lighter exchange,
+        avoiding the need for trading_bot.py to handle exchange-specific retry mechanisms.
+        
+        Args:
+            contract_id: The contract identifier
+            quantity: Order quantity
+            direction: 'buy' or 'sell'
+            max_retries: Maximum number of retry attempts (default: 5)
+            initial_delay: Initial delay between retries in seconds (default: 0.3)
+            
+        Returns:
+            OrderResult: Final result after all retry attempts
+        """
+        retry_count = 0
+        retry_delay = initial_delay
+        
+        self.logger.log(f"开始带重试机制的市价单: {direction} {quantity}, 最大重试次数: {max_retries}", "INFO")
+        
+        while retry_count <= max_retries:
+            if retry_count > 0:
+                self.logger.log(f"市价单重试 {retry_count}/{max_retries}", "INFO")
+                await asyncio.sleep(retry_delay)
+                
+                # 在重试前检查持仓状态，如果已经没有持仓则无需继续
+                try:
+                    current_position = await self.get_account_positions()
+                    if abs(current_position) == 0:
+                        self.logger.log(f"检测到持仓已清零，无需继续重试", "INFO")
+                        return OrderResult(
+                            success=True,
+                            order_id="position_cleared",
+                            status="FILLED",
+                            filled_size=quantity,
+                            side=direction
+                        )
+                except Exception as e:
+                    self.logger.log(f"检查持仓状态失败: {e}", "WARNING")
+                    # 继续重试流程
+            
+            # 尝试下单
+            try:
+                self.logger.log(f"尝试市价单: {direction} {quantity}", "INFO")
+                order_result = await self.place_market_order(
+                    contract_id=contract_id,
+                    quantity=quantity,
+                    direction=direction,
+                    reduce_only=True  # 对冲平仓通常是reduce_only
+                )
+                
+                # 检查订单结果
+                if order_result.success:
+                    if order_result.status in ["FILLED", "PARTIALLY_FILLED"]:
+                        filled_size = order_result.filled_size or 0
+                        if filled_size > 0:
+                            self.logger.log(f"市价单成功: 成交量 {filled_size}", "INFO")
+                            return order_result
+                    elif order_result.status == "PENDING":
+                        # 如果是挂起状态，等待一段时间再检查持仓状态
+                        self.logger.log(f"订单状态为PENDING，等待确认", "INFO")
+                        await asyncio.sleep(2.0)
+                        
+                        try:
+                            updated_position = await self.get_account_positions()
+                            if abs(updated_position) == 0:
+                                self.logger.log(f"市价单重试成功: 持仓已清零", "INFO")
+                                return OrderResult(
+                                    success=True,
+                                    order_id=order_result.order_id,
+                                    status="FILLED",
+                                    filled_size=quantity,
+                                    side=direction
+                                )
+                        except Exception as e:
+                            self.logger.log(f"检查更新后持仓状态失败: {e}", "WARNING")
+                
+                # 如果到这里说明订单没有成功或部分成功，准备重试
+                retry_count += 1
+                retry_delay *= 1.5  # 指数退避
+                
+                if retry_count <= max_retries:
+                    self.logger.log(f"市价单重试 {retry_count} 失败: {order_result.error_message or '未知错误'}", "WARNING")
+                else:
+                    self.logger.log(f"市价单重试全部失败，已达到最大重试次数 {max_retries}", "ERROR")
+                    return OrderResult(
+                        success=False,
+                        error_message=f"市价单重试全部失败: {order_result.error_message or '未知错误'}"
+                    )
+                    
+            except Exception as e:
+                retry_count += 1
+                retry_delay *= 1.5
+                
+                if retry_count <= max_retries:
+                    self.logger.log(f"市价单异常重试 {retry_count}: {e}", "WARNING")
+                else:
+                    self.logger.log(f"市价单异常重试全部失败: {e}", "ERROR")
+                    return OrderResult(success=False, error_message=f"市价单异常: {e}")
+        
+        # 理论上不应该到达这里
+        return OrderResult(success=False, error_message="重试机制异常结束")

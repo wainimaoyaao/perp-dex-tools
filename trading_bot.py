@@ -116,24 +116,24 @@ class TradingBot:
         except ValueError as e:
             raise ValueError(f"Failed to create exchange client: {e}")
 
-        # Create hedge client if hedge is enabled
-        self.hedge_client = None
-        self.hedge_contract_id = None  # Store hedge client's contract_id
+        # Create hedge exchange if hedge is enabled
+        self.hedge_exchange = None
+        self.hedge_contract_id = None  # Store hedge exchange's contract_id
         if config.enable_hedge:
             try:
-                # Create a separate config for hedge client to avoid contract_id conflicts
+                # Create a separate config for hedge exchange to avoid contract_id conflicts
                 from copy import deepcopy
                 hedge_config = deepcopy(config)
                 hedge_config.exchange = config.hedge_exchange
                 
-                self.hedge_client = ExchangeFactory.create_exchange(
+                self.hedge_exchange = ExchangeFactory.create_exchange(
                     config.hedge_exchange,
                     hedge_config
                 )
-                self.logger.log(f"Hedge client initialized for {config.hedge_exchange}", "INFO")
+                self.logger.log(f"Hedge exchange initialized for {config.hedge_exchange}", "INFO")
             except ValueError as e:
-                self.logger.log(f"Failed to create hedge client: {e}", "ERROR")
-                raise ValueError(f"Failed to create hedge client: {e}")
+                self.logger.log(f"Failed to create hedge exchange: {e}", "ERROR")
+                raise ValueError(f"Failed to create hedge exchange: {e}")
 
         # Trading state
         self.active_close_orders = []
@@ -155,6 +155,7 @@ class TradingBot:
 
         # 对冲相关状态
         self.active_hedge_positions = []  # 活跃的对冲位置列表
+        self.hedge_closing_in_progress = False  # 对冲平仓是否正在进行中
 
         # Initialize drawdown monitor if enabled
         self.drawdown_monitor = None
@@ -196,8 +197,20 @@ class TradingBot:
         self.shutdown_requested = True
 
         try:
-            # Disconnect from exchange
+            # 注意：对冲平仓现在在主循环中提前执行，这里只处理连接断开
+            self.logger.log("执行最终清理和连接断开", "INFO")
+            
+            # Disconnect from main exchange
             await self.exchange_client.disconnect()
+            self.logger.log("Main exchange disconnected", "INFO")
+            
+            # Disconnect from hedge exchange only if hedge mode is enabled
+            if self.config.enable_hedge and self.hedge_exchange:
+                await self.hedge_exchange.disconnect()
+                self.logger.log("Hedge exchange disconnected", "INFO")
+            elif not self.config.enable_hedge:
+                self.logger.log("Hedge mode disabled, skipping hedge exchange disconnect", "INFO")
+            
             self.logger.log("Graceful shutdown completed", "INFO")
 
         except Exception as e:
@@ -231,7 +244,7 @@ class TradingBot:
                             self.order_filled_event.set()
                     elif order_type == "CLOSE":
                         # 检查是否是止盈订单成交，需要平仓对冲单
-                        if self.config.enable_hedge and self.hedge_client:
+                        if self.config.enable_hedge and self.hedge_exchange:
                             hedge_position = self._find_hedge_position_by_profit_order(order_id)
                             if hedge_position:
                                 # 异步执行对冲平仓
@@ -348,13 +361,20 @@ class TradingBot:
         if self.order_filled_event.is_set() or order_result.status == 'FILLED':
             # 主订单成交，检查是否需要执行对冲
             hedge_position = None
-            if self.config.enable_hedge and self.hedge_client:
+            if self.config.enable_hedge and self.hedge_exchange:
                 try:
                     hedge_position = await self._execute_immediate_hedge(order_id, filled_price, self.config.quantity, self.config.direction)
                     self.logger.log(f"[HEDGE] 对冲订单已执行: {hedge_position.hedge_order_id}", "INFO")
                 except Exception as e:
                     self.logger.log(f"[HEDGE] 对冲执行失败: {e}", "ERROR")
-                    # 对冲失败不影响主流程继续
+                    # 启动对冲开仓失败补救机制
+                    hedge_position = await self._handle_hedge_opening_failure(
+                        order_id, filled_price, self.config.quantity, self.config.direction, str(e)
+                    )
+                    if hedge_position:
+                        self.logger.log(f"[HEDGE] 对冲开仓补救成功: {hedge_position.hedge_order_id}", "INFO")
+                    else:
+                        self.logger.log(f"[HEDGE] 对冲开仓补救失败，存在风险敞口", "ERROR")
             
             if self.config.aster_boost:
                 close_order_result = await self.exchange_client.place_market_order(
@@ -500,12 +520,20 @@ class TradingBot:
                 
                 # 部分成交时也执行对冲
                 hedge_position = None
-                if self.config.enable_hedge and self.hedge_client:
+                if self.config.enable_hedge and self.hedge_exchange:
                     try:
                         hedge_position = await self._execute_immediate_hedge(order_id, filled_price, self.order_filled_amount, self.config.direction)
                         self.logger.log(f"[HEDGE] 部分成交对冲订单已执行: {hedge_position.hedge_order_id}", "INFO")
                     except Exception as e:
                         self.logger.log(f"[HEDGE] 部分成交对冲执行失败: {e}", "ERROR")
+                        # 启动对冲开仓失败补救机制
+                        hedge_position = await self._handle_hedge_opening_failure(
+                            order_id, filled_price, self.order_filled_amount, self.config.direction, str(e)
+                        )
+                        if hedge_position:
+                            self.logger.log(f"[HEDGE] 部分成交对冲开仓补救成功: {hedge_position.hedge_order_id}", "INFO")
+                        else:
+                            self.logger.log(f"[HEDGE] 部分成交对冲开仓补救失败，存在风险敞口", "ERROR")
                 
                 close_side = self.config.close_order_side
                 if self.config.aster_boost:
@@ -720,8 +748,8 @@ class TradingBot:
         
         for attempt in range(max_retries):
             try:
-                if hasattr(self.hedge_client, 'fetch_bbo_prices'):
-                    bid_price, ask_price = await self.hedge_client.fetch_bbo_prices(self.hedge_contract_id)
+                if hasattr(self.hedge_exchange, 'fetch_bbo_prices'):
+                    bid_price, ask_price = await self.hedge_exchange.fetch_bbo_prices(self.hedge_contract_id)
                     if bid_price <= 0 or ask_price <= 0:
                         raise Exception(f"对冲交易所价格无效: bid={bid_price}, ask={ask_price}")
                     self.logger.log(f"[HEDGE] 对冲交易所价格验证通过: bid={bid_price}, ask={ask_price}", "DEBUG")
@@ -736,26 +764,73 @@ class TradingBot:
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2  # 指数退避
         
-        # 在对冲交易所下市价单（带重试）
+        # 在对冲交易所下市价单（带重试和滑点处理）
+        hedge_order_result = None
         for attempt in range(max_retries):
             try:
-                hedge_order_result = await self.hedge_client.place_market_order(
+                hedge_order_result = await self.hedge_exchange.place_market_order(
                     self.hedge_contract_id,
                     quantity,
                     hedge_side
                 )
-                break  # 订单下单成功，跳出重试循环
+                
+                # 检查订单结果
+                if hedge_order_result.success:
+                    # 检查订单状态，处理滑点取消情况
+                    if hasattr(hedge_order_result, 'status') and hedge_order_result.status:
+                        if hedge_order_result.status in ["FILLED", "PARTIALLY_FILLED"]:
+                            # 订单成功执行
+                            break
+                        elif "SLIPPAGE" in hedge_order_result.status.upper() or hedge_order_result.status == "CANCELED":
+                            # 滑点过大被取消，需要重试
+                            self.logger.log(f"[HEDGE] 对冲订单因滑点被取消 (尝试 {attempt + 1}/{max_retries}): {hedge_order_result.status}", "WARNING")
+                            if attempt == max_retries - 1:
+                                raise Exception(f"对冲订单因滑点被取消，已重试 {max_retries} 次: {hedge_order_result.status}")
+                            else:
+                                await asyncio.sleep(1.0)
+                                continue
+                        elif hedge_order_result.status == "PENDING":
+                            # 订单挂起，等待确认
+                            await asyncio.sleep(2.0)
+                            # 检查是否有成交
+                            if hasattr(hedge_order_result, 'filled_size') and hedge_order_result.filled_size and hedge_order_result.filled_size > 0:
+                                break
+                            else:
+                                self.logger.log(f"[HEDGE] 对冲订单挂起状态超时 (尝试 {attempt + 1}/{max_retries})", "WARNING")
+                                if attempt == max_retries - 1:
+                                    raise Exception(f"对冲订单挂起状态超时，已重试 {max_retries} 次")
+                                else:
+                                    await asyncio.sleep(1.0)
+                                    continue
+                        else:
+                            # 其他状态，直接成功
+                            break
+                    else:
+                        # 没有状态信息，假设成功
+                        break
+                else:
+                    # 订单下单失败
+                    error_msg = hedge_order_result.error_message if hasattr(hedge_order_result, 'error_message') else "未知错误"
+                    self.logger.log(f"[HEDGE] 对冲订单下单失败 (尝试 {attempt + 1}/{max_retries}): {error_msg}", "WARNING")
+                    if attempt == max_retries - 1:
+                        raise Exception(f"对冲订单下单失败，已重试 {max_retries} 次: {error_msg}")
+                    else:
+                        await asyncio.sleep(1.0)
+                        continue
+                        
             except Exception as e:
-                self.logger.log(f"[HEDGE] 对冲订单下单失败 (尝试 {attempt + 1}/{max_retries}): {e}", "WARNING")
+                self.logger.log(f"[HEDGE] 对冲订单执行异常 (尝试 {attempt + 1}/{max_retries}): {e}", "WARNING")
                 if attempt == max_retries - 1:
                     # 最后一次尝试失败
-                    raise Exception(f"对冲订单下单失败，已重试 {max_retries} 次: {e}")
+                    raise Exception(f"对冲订单执行异常，已重试 {max_retries} 次: {e}")
                 else:
                     # 等待后重试
                     await asyncio.sleep(1.0)
         
-        if not hedge_order_result.success:
-            raise Exception(f"对冲订单失败: {hedge_order_result.error_message}")
+        # 最终检查订单结果
+        if not hedge_order_result or not hedge_order_result.success:
+            error_msg = hedge_order_result.error_message if hedge_order_result and hasattr(hedge_order_result, 'error_message') else "未知错误"
+            raise Exception(f"对冲订单最终失败: {error_msg}")
         
         # 创建对冲位置记录
         hedge_position = HedgePosition(
@@ -792,7 +867,7 @@ class TradingBot:
             # 在对冲交易所平仓对冲单
             close_side = hedge_position.get_close_hedge_side()
             
-            close_order_result = await self.hedge_client.place_market_order(
+            close_order_result = await self.hedge_exchange.place_market_order(
                 contract_id=self.hedge_contract_id,
                 quantity=hedge_position.quantity,
                 direction=close_side,
@@ -803,14 +878,56 @@ class TradingBot:
                 self.logger.log(f"对冲平仓订单已下单: {close_order_result.order_id} "
                                f"[{close_side}] {hedge_position.quantity}", "INFO")
                 
-                # 更新状态为已完成
-                hedge_position.status = "COMPLETED"
+                # 检查订单实际执行状态
+                order_success = False
                 
-                # 记录对冲周期完成
-                self._log_hedge_cycle_completed(hedge_position)
+                # 检查订单状态字段
+                if close_order_result.status:
+                    if close_order_result.status in ['FILLED', 'PARTIALLY_FILLED']:
+                        order_success = True
+                        self.logger.log(f"对冲平仓订单执行成功: {close_order_result.order_id} "
+                                       f"状态: {close_order_result.status}", "INFO")
+                    elif close_order_result.status in ['CANCELED', 'CANCELED-TOO-MUCH-SLIPPAGE']:
+                        self.logger.log(f"对冲平仓订单被取消: {close_order_result.order_id} "
+                                       f"状态: {close_order_result.status}", "WARNING")
+                    else:
+                        self.logger.log(f"对冲平仓订单状态未知: {close_order_result.order_id} "
+                                       f"状态: {close_order_result.status}", "WARNING")
                 
-                # 清理已完成的对冲位置
-                self._remove_completed_hedge_positions()
+                # 检查成交数量字段
+                elif close_order_result.filled_size is not None and close_order_result.filled_size > 0:
+                    order_success = True
+                    self.logger.log(f"对冲平仓订单部分成交: {close_order_result.order_id} "
+                                   f"成交数量: {close_order_result.filled_size}", "INFO")
+                
+                # 检查错误消息字段
+                elif close_order_result.error_message:
+                    if "awaiting confirmation" in close_order_result.error_message:
+                        self.logger.log(f"对冲平仓订单等待确认: {close_order_result.order_id} "
+                                       f"消息: {close_order_result.error_message}", "WARNING")
+                    else:
+                        self.logger.log(f"对冲平仓订单出现错误: {close_order_result.order_id} "
+                                       f"错误: {close_order_result.error_message}", "ERROR")
+                
+                # 如果没有明确的状态信息，记录警告
+                else:
+                    self.logger.log(f"对冲平仓订单状态不明确: {close_order_result.order_id} "
+                                   f"需要进一步确认", "WARNING")
+                
+                # 只有在订单真正成功执行时才标记为完成
+                if order_success:
+                    # 更新状态为已完成
+                    hedge_position.status = "COMPLETED"
+                    
+                    # 记录对冲周期完成
+                    self._log_hedge_cycle_completed(hedge_position)
+                    
+                    # 清理已完成的对冲位置
+                    self._remove_completed_hedge_positions()
+                else:
+                    # 订单失败或状态不明确，启动重试机制
+                    self.logger.log(f"对冲平仓订单执行失败或状态不明确，启动重试机制: {hedge_position.hedge_order_id}", "ERROR")
+                    await self._handle_hedge_close_failure(hedge_position, close_order_result)
                 
             else:
                 self.logger.log(f"对冲平仓订单下单失败: {hedge_position.hedge_order_id}", "ERROR")
@@ -819,9 +936,132 @@ class TradingBot:
             self.logger.log(f"处理止盈成交后对冲平仓时出错: {e}", "ERROR")
             self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
 
+    async def _handle_hedge_close_failure(self, hedge_position: HedgePosition, failed_order_result):
+        """
+        处理对冲平仓失败的情况，使用Lighter交易所的内置重试机制
+        
+        Args:
+            hedge_position: 对冲位置
+            failed_order_result: 失败的订单结果
+        """
+        try:
+            self.logger.log(f"对冲平仓失败，使用内置重试机制: {failed_order_result.error_message}", "WARNING")
+            
+            # 使用Lighter交易所的带重试机制的市价单方法
+            close_side = hedge_position.get_close_hedge_side()
+            current_size = abs(hedge_position.quantity)
+            
+            # 检查对冲交易所是否支持带重试机制的方法
+            if hasattr(self.hedge_exchange, 'place_market_order_with_retry'):
+                self.logger.log(f"使用带重试机制的市价单进行对冲平仓: {close_side} {current_size}", "INFO")
+                
+                retry_order_result = await self.hedge_exchange.place_market_order_with_retry(
+                    contract_id=self.config.contract_id,
+                    direction=close_side,
+                    quantity=Decimal(str(current_size)),
+                    max_retries=5,
+                    initial_delay=0.3
+                )
+                
+                if retry_order_result.success:
+                    self.logger.log(f"对冲平仓重试成功", "INFO")
+                    hedge_position.status = "COMPLETED"
+                    return
+                else:
+                    # 重试机制也失败了
+                    self.logger.log(f"对冲平仓重试机制失败: {retry_order_result.error_message}", "ERROR")
+                    error_msg = f"🚨 对冲平仓失败警报\n" \
+                               f"合约: {self.config.contract_id}\n" \
+                               f"对冲订单ID: {hedge_position.hedge_order_id}\n" \
+                               f"重试机制失败: {retry_order_result.error_message}\n" \
+                               f"请手动检查并处理对冲持仓！"
+                    await self.send_notification(error_msg)
+                    hedge_position.status = "CLOSING"
+            else:
+                # 如果对冲交易所不支持重试机制，回退到原始方法
+                self.logger.log(f"对冲交易所不支持重试机制，使用原始方法", "WARNING")
+                error_msg = f"🚨 对冲平仓失败警报\n" \
+                           f"合约: {self.config.contract_id}\n" \
+                           f"对冲订单ID: {hedge_position.hedge_order_id}\n" \
+                           f"错误: {failed_order_result.error_message}\n" \
+                           f"请手动检查并处理对冲持仓！"
+                await self.send_notification(error_msg)
+                hedge_position.status = "CLOSING"
+                
+        except Exception as e:
+            self.logger.log(f"调用重试机制时发生异常: {e}", "ERROR")
+            self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
+            error_msg = f"🚨 对冲平仓异常警报\n" \
+                       f"合约: {self.config.contract_id}\n" \
+                       f"对冲订单ID: {hedge_position.hedge_order_id}\n" \
+                       f"异常: {str(e)}\n" \
+                       f"请手动检查并处理对冲持仓！"
+            await self.send_notification(error_msg)
+            hedge_position.status = "CLOSING"
+
+    async def _handle_hedge_opening_failure(self, main_order_id: str, main_fill_price: Decimal, quantity: Decimal, main_side: str, original_error: str) -> Optional[HedgePosition]:
+        """
+        处理对冲开仓失败的情况，实现重试和补救机制
+        
+        Args:
+            main_order_id: 主订单ID
+            main_fill_price: 主订单成交价格
+            quantity: 对冲数量
+            main_side: 主订单方向
+            original_error: 原始错误信息
+            
+        Returns:
+            HedgePosition: 成功时返回对冲位置，失败时返回None
+        """
+        try:
+            max_retries = 5  # 额外重试2次
+            retry_delay = 0.3  # 初始重试延迟2秒
+            
+            self.logger.log(f"[HEDGE] 对冲开仓失败，启动补救机制。原始错误: {original_error}", "WARNING")
+            
+            for retry_count in range(1, max_retries + 1):
+                self.logger.log(f"[HEDGE] 对冲开仓补救重试 {retry_count}/{max_retries}", "INFO")
+                
+                # 等待一段时间，让市场条件可能改善
+                await asyncio.sleep(retry_delay)
+                
+                try:
+                    # 重新尝试对冲开仓
+                    hedge_position = await self._execute_immediate_hedge(main_order_id, main_fill_price, quantity, main_side)
+                    self.logger.log(f"[HEDGE] 对冲开仓补救成功: {hedge_position.hedge_order_id}", "INFO")
+                    return hedge_position
+                    
+                except Exception as e:
+                    self.logger.log(f"[HEDGE] 对冲开仓补救重试 {retry_count} 失败: {e}", "WARNING")
+                    retry_delay *= 1.2  # 指数退避
+            
+            # 所有补救重试都失败了
+            self.logger.log(f"[HEDGE] 对冲开仓补救全部失败，已达到最大重试次数 {max_retries}", "ERROR")
+            
+            # 发送紧急通知
+            error_msg = f"🚨 对冲开仓失败警报\n" \
+                       f"合约: {self.config.contract_id}\n" \
+                       f"主订单ID: {main_order_id}\n" \
+                       f"主订单价格: {main_fill_price}\n" \
+                       f"对冲数量: {quantity}\n" \
+                       f"主订单方向: {main_side}\n" \
+                       f"补救重试次数: {max_retries}\n" \
+                       f"原始错误: {original_error}\n" \
+                       f"⚠️ 存在未对冲风险敞口，请立即手动处理！"
+            
+            await self.send_notification(error_msg)
+            
+            return None
+            
+        except Exception as e:
+            self.logger.log(f"[HEDGE] 处理对冲开仓失败时出错: {e}", "ERROR")
+            self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
+            return None
+
     async def _close_all_hedge_positions_on_stop_loss(self) -> dict:
         """
         在止损触发后平仓所有活跃的对冲位置
+        优化版本：通过获取实际持仓总量一次性平仓，而不是逐个平仓
         
         Returns:
             dict: 平仓结果统计 {
@@ -845,7 +1085,7 @@ class TradingBot:
                 return result
             
             # 检查是否有对冲客户端
-            if not hasattr(self, 'hedge_client') or self.hedge_client is None:
+            if not hasattr(self, 'hedge_exchange') or self.hedge_exchange is None:
                 error_msg = "对冲客户端未初始化，无法执行对冲平仓"
                 self.logger.log(error_msg, "ERROR")
                 result['errors'].append(error_msg)
@@ -864,11 +1104,207 @@ class TradingBot:
                 return result
             
             self.logger.log("=" * 60, "WARNING")
-            self.logger.log("开始执行止损时对冲平仓操作", "WARNING")
+            self.logger.log("开始执行止损时对冲平仓操作（优化版本：一次性平仓）", "WARNING")
             self.logger.log(f"发现 {result['total_positions']} 个活跃对冲位置需要平仓", "WARNING")
             self.logger.log("=" * 60, "WARNING")
             
-            # 批量平仓所有对冲位置
+            # 获取对冲交易所的实际持仓总量（增强版本：延迟+重试）
+            try:
+                self.logger.log("正在获取对冲交易所的实际持仓总量...", "INFO")
+                
+                # 等待3秒让对冲交易所数据同步
+                self.logger.log("等待对冲交易所数据同步（3秒）...", "INFO")
+                await asyncio.sleep(3)
+                
+                # 重试机制：最多重试3次
+                current_hedge_position = None
+                for retry_count in range(3):
+                    try:
+                        current_hedge_position = await self.hedge_exchange.get_account_positions()
+                        self.logger.log(f"对冲交易所持仓查询结果（第{retry_count + 1}次）: {current_hedge_position}", "INFO")
+                        
+                        # 调试日志：显示详细的判断过程
+                        abs_position = abs(current_hedge_position)
+                        self.logger.log(f"🔍 持仓判断详情: abs({current_hedge_position}) = {abs_position}, 阈值: 0.0001", "INFO")
+                        
+                        # 如果查询到有持仓，立即跳出重试循环（降低阈值到0.0001）
+                        if abs_position > 0.0001:
+                            self.logger.log(f"✅ 对冲交易所确认有持仓: {current_hedge_position}，继续执行平仓", "INFO")
+                            break
+                        
+                        # 如果是最后一次重试，记录详细信息
+                        if retry_count == 2:
+                            self.logger.log(f"⚠️ 重试{retry_count + 1}次后仍无持仓，活跃对冲位置数: {len(active_hedge_positions)}", "WARNING")
+                            break
+                        
+                        # 等待2秒后重试
+                        self.logger.log(f"❌ 第{retry_count + 1}次查询无持仓（{abs_position} <= 0.0001），2秒后重试...", "INFO")
+                        await asyncio.sleep(2)
+                        
+                    except Exception as e:
+                        self.logger.log(f"第{retry_count + 1}次持仓查询失败: {str(e)}", "ERROR")
+                        if retry_count == 2:  # 最后一次重试
+                            raise
+                        await asyncio.sleep(2)
+                
+                # 检查是否真的无持仓（使用与上面一致的阈值）
+                if abs(current_hedge_position) <= 0.0001:
+                    # 记录详细的诊断信息
+                    self.logger.log("🔍 对冲平仓诊断信息:", "WARNING")
+                    self.logger.log(f"  - 活跃对冲位置数量: {len(active_hedge_positions)}", "WARNING")
+                    self.logger.log(f"  - 对冲交易所查询持仓: {current_hedge_position}", "WARNING")
+                    self.logger.log(f"  - 对冲交易所名称: {self.hedge_exchange.get_exchange_name()}", "WARNING")
+                    
+                    # 如果有活跃对冲位置但查询无持仓，可能是数据同步问题
+                    if len(active_hedge_positions) > 0:
+                        self.logger.log("⚠️ 检测到数据不一致：有活跃对冲位置但查询无持仓", "WARNING")
+                        self.logger.log("可能原因：1) 对冲交易所数据同步延迟 2) API连接问题 3) 对冲订单已被其他方式平仓", "WARNING")
+                    
+                    self.logger.log("对冲交易所无持仓，标记所有对冲位置为已完成", "INFO")
+                    # 标记所有对冲位置为已完成
+                    for hedge_position in active_hedge_positions:
+                        hedge_position.status = "COMPLETED"
+                        self._log_hedge_cycle_completed(hedge_position)
+                        result['closed_successfully'] += 1
+                    
+                    # 清理已完成的对冲位置
+                    self._remove_completed_hedge_positions()
+                    
+                    self.logger.log(f"所有 {result['total_positions']} 个对冲位置已标记为完成", "INFO")
+                    return result
+                
+                # 确定平仓方向和数量（修复：使用对冲位置的正确方向信息）
+                close_quantity = abs(current_hedge_position)
+                
+                # 从活跃对冲位置获取正确的平仓方向
+                # 注意：所有活跃对冲位置应该有相同的对冲方向，因为它们都是同一策略的对冲
+                if active_hedge_positions:
+                    # 使用第一个活跃对冲位置的平仓方向（所有对冲位置方向应该一致）
+                    close_side = active_hedge_positions[0].get_close_hedge_side()
+                    hedge_side = active_hedge_positions[0].hedge_side
+                    self.logger.log(f"🔧 平仓方向计算: 对冲方向={hedge_side} -> 平仓方向={close_side}", "INFO")
+                else:
+                    # 备用逻辑：如果没有活跃对冲位置，根据持仓数量判断（不应该发生）
+                    close_side = "sell" if current_hedge_position > 0 else "buy"
+                    self.logger.log(f"⚠️ 使用备用平仓方向逻辑: 持仓={current_hedge_position} -> 平仓方向={close_side}", "WARNING")
+                
+                self.logger.log(f"对冲交易所实际持仓: {current_hedge_position}, 平仓方向: {close_side}, 平仓数量: {close_quantity}", "INFO")
+                
+                # 使用带重试机制的市价单一次性平仓所有持仓
+                if hasattr(self.hedge_exchange, 'place_market_order_with_retry'):
+                    self.logger.log("使用带重试机制的市价单进行一次性对冲平仓", "INFO")
+                    
+                    close_order_result = await self.hedge_exchange.place_market_order_with_retry(
+                        contract_id=self.hedge_contract_id,
+                        direction=close_side,
+                        quantity=Decimal(str(close_quantity)),
+                        max_retries=5,
+                        initial_delay=0.5  # 增加初始延迟，避免滑点
+                    )
+                    
+                    if close_order_result.success:
+                        self.logger.log(f"一次性对冲平仓成功: {close_order_result.order_id} [{close_side}] {close_quantity}", "INFO")
+                        
+                        # 标记所有对冲位置为已完成
+                        for hedge_position in active_hedge_positions:
+                            hedge_position.status = "COMPLETED"
+                            self._log_hedge_cycle_completed(hedge_position)
+                            result['closed_successfully'] += 1
+                        
+                        # 清理已完成的对冲位置
+                        self._remove_completed_hedge_positions()
+                        
+                    else:
+                        error_msg = f"一次性对冲平仓失败: {close_order_result.error_message}"
+                        self.logger.log(error_msg, "ERROR")
+                        result['failed_to_close'] = result['total_positions']
+                        result['errors'].append(error_msg)
+                        
+                        # 回退到逐个平仓模式
+                        self.logger.log("回退到逐个平仓模式...", "WARNING")
+                        return await self._fallback_individual_hedge_close(active_hedge_positions, result)
+                
+                else:
+                    # 对冲交易所不支持重试机制，使用普通市价单
+                    self.logger.log("对冲交易所不支持重试机制，使用普通市价单", "WARNING")
+                    
+                    close_order_result = await self.hedge_exchange.place_market_order(
+                        contract_id=self.hedge_contract_id,
+                        direction=close_side,
+                        quantity=Decimal(str(close_quantity)),
+                        reduce_only=True
+                    )
+                    
+                    if close_order_result and close_order_result.order_id:
+                        self.logger.log(f"一次性对冲平仓成功: {close_order_result.order_id} [{close_side}] {close_quantity}", "INFO")
+                        
+                        # 标记所有对冲位置为已完成
+                        for hedge_position in active_hedge_positions:
+                            hedge_position.status = "COMPLETED"
+                            self._log_hedge_cycle_completed(hedge_position)
+                            result['closed_successfully'] += 1
+                        
+                        # 清理已完成的对冲位置
+                        self._remove_completed_hedge_positions()
+                        
+                    else:
+                        error_msg = "一次性对冲平仓失败"
+                        self.logger.log(error_msg, "ERROR")
+                        result['failed_to_close'] = result['total_positions']
+                        result['errors'].append(error_msg)
+                        
+                        # 回退到逐个平仓模式
+                        self.logger.log("回退到逐个平仓模式...", "WARNING")
+                        return await self._fallback_individual_hedge_close(active_hedge_positions, result)
+                
+            except Exception as e:
+                error_msg = f"获取对冲交易所持仓或执行一次性平仓时出错: {e}"
+                self.logger.log(error_msg, "ERROR")
+                self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
+                result['errors'].append(error_msg)
+                
+                # 回退到逐个平仓模式
+                self.logger.log("回退到逐个平仓模式...", "WARNING")
+                return await self._fallback_individual_hedge_close(active_hedge_positions, result)
+            
+            # 记录最终结果
+            self.logger.log("=" * 60, "WARNING")
+            self.logger.log("止损时对冲平仓操作完成（一次性平仓模式）", "WARNING")
+            self.logger.log(f"总对冲位置: {result['total_positions']}", "WARNING")
+            self.logger.log(f"成功平仓: {result['closed_successfully']}", "WARNING")
+            self.logger.log(f"平仓失败: {result['failed_to_close']}", "WARNING")
+            if result['errors']:
+                self.logger.log(f"错误数量: {len(result['errors'])}", "WARNING")
+            self.logger.log("=" * 60, "WARNING")
+            
+        except Exception as e:
+            error_msg = f"执行止损时对冲平仓操作时发生严重错误: {e}"
+            self.logger.log(error_msg, "ERROR")
+            self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
+            result['errors'].append(error_msg)
+        
+        return result
+
+    async def _fallback_individual_hedge_close(self, active_hedge_positions: list, result: dict) -> dict:
+        """
+        回退到逐个平仓模式的方法
+        当一次性平仓失败时使用此方法作为备用方案
+        
+        Args:
+            active_hedge_positions: 活跃的对冲位置列表
+            result: 当前的结果统计字典
+            
+        Returns:
+            dict: 更新后的平仓结果统计
+        """
+        try:
+            self.logger.log("开始执行回退逐个平仓模式", "WARNING")
+            
+            # 重置计数器
+            result['closed_successfully'] = 0
+            result['failed_to_close'] = 0
+            
+            # 逐个平仓所有对冲位置
             for i, hedge_position in enumerate(active_hedge_positions, 1):
                 try:
                     self.logger.log(f"[{i}/{result['total_positions']}] 正在平仓对冲位置: "
@@ -879,30 +1315,55 @@ class TradingBot:
                     # 确定平仓方向
                     close_side = hedge_position.get_close_hedge_side()
                     
-                    # 使用市价单平仓对冲位置
-                    close_order_result = await self.hedge_client.place_market_order(
-                        contract_id=self.hedge_contract_id,
-                        direction=close_side,
-                        quantity=hedge_position.quantity,
-                        reduce_only=True  # 确保只平仓，不开新仓
-                    )
-                    
-                    if close_order_result and hasattr(close_order_result, 'order_id') and close_order_result.order_id:
-                        self.logger.log(f"[{i}/{result['total_positions']}] 对冲平仓订单成功下单: "
-                                       f"{close_order_result.order_id} [{close_side}] {hedge_position.quantity}", "INFO")
+                    # 优先使用带重试机制的市价单
+                    if hasattr(self.hedge_exchange, 'place_market_order_with_retry'):
+                        close_order_result = await self.hedge_exchange.place_market_order_with_retry(
+                            contract_id=self.hedge_contract_id,
+                            direction=close_side,
+                            quantity=hedge_position.quantity,
+                            max_retries=3,
+                            initial_delay=0.3
+                        )
                         
-                        # 更新对冲位置状态
-                        hedge_position.status = "COMPLETED"
-                        result['closed_successfully'] += 1
-                        
-                        # 记录对冲周期完成
-                        self._log_hedge_cycle_completed(hedge_position)
-                        
+                        if close_order_result.success:
+                            self.logger.log(f"[{i}/{result['total_positions']}] 对冲平仓订单成功下单（重试模式）: "
+                                           f"{close_order_result.order_id} [{close_side}] {hedge_position.quantity}", "INFO")
+                            
+                            # 更新对冲位置状态
+                            hedge_position.status = "COMPLETED"
+                            result['closed_successfully'] += 1
+                            
+                            # 记录对冲周期完成
+                            self._log_hedge_cycle_completed(hedge_position)
+                        else:
+                            error_msg = f"[{i}/{result['total_positions']}] 对冲平仓订单下单失败（重试模式）: {close_order_result.error_message}"
+                            self.logger.log(error_msg, "ERROR")
+                            result['failed_to_close'] += 1
+                            result['errors'].append(error_msg)
                     else:
-                        error_msg = f"[{i}/{result['total_positions']}] 对冲平仓订单下单失败: {hedge_position.hedge_order_id}"
-                        self.logger.log(error_msg, "ERROR")
-                        result['failed_to_close'] += 1
-                        result['errors'].append(error_msg)
+                        # 使用普通市价单
+                        close_order_result = await self.hedge_exchange.place_market_order(
+                            contract_id=self.hedge_contract_id,
+                            direction=close_side,
+                            quantity=hedge_position.quantity,
+                            reduce_only=True
+                        )
+                        
+                        if close_order_result and hasattr(close_order_result, 'order_id') and close_order_result.order_id:
+                            self.logger.log(f"[{i}/{result['total_positions']}] 对冲平仓订单成功下单: "
+                                           f"{close_order_result.order_id} [{close_side}] {hedge_position.quantity}", "INFO")
+                            
+                            # 更新对冲位置状态
+                            hedge_position.status = "COMPLETED"
+                            result['closed_successfully'] += 1
+                            
+                            # 记录对冲周期完成
+                            self._log_hedge_cycle_completed(hedge_position)
+                        else:
+                            error_msg = f"[{i}/{result['total_positions']}] 对冲平仓订单下单失败: {hedge_position.hedge_order_id}"
+                            self.logger.log(error_msg, "ERROR")
+                            result['failed_to_close'] += 1
+                            result['errors'].append(error_msg)
                     
                     # 添加短暂延迟，避免API限制
                     if i < result['total_positions']:
@@ -918,18 +1379,10 @@ class TradingBot:
             # 清理已完成的对冲位置
             self._remove_completed_hedge_positions()
             
-            # 记录最终结果
-            self.logger.log("=" * 60, "WARNING")
-            self.logger.log("止损时对冲平仓操作完成", "WARNING")
-            self.logger.log(f"总对冲位置: {result['total_positions']}", "WARNING")
-            self.logger.log(f"成功平仓: {result['closed_successfully']}", "WARNING")
-            self.logger.log(f"平仓失败: {result['failed_to_close']}", "WARNING")
-            if result['errors']:
-                self.logger.log(f"错误数量: {len(result['errors'])}", "WARNING")
-            self.logger.log("=" * 60, "WARNING")
+            self.logger.log("回退逐个平仓模式执行完成", "WARNING")
             
         except Exception as e:
-            error_msg = f"执行止损时对冲平仓操作时发生严重错误: {e}"
+            error_msg = f"执行回退逐个平仓模式时发生错误: {e}"
             self.logger.log(error_msg, "ERROR")
             self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
             result['errors'].append(error_msg)
@@ -988,29 +1441,40 @@ class TradingBot:
         
         # 在主订单止损完成后，执行对冲平仓操作
         try:
-            self.logger.log("主订单止损完成，开始执行对冲平仓操作", "INFO")
-            
-            # 执行对冲平仓
-            hedge_close_result = await self._close_all_hedge_positions_on_stop_loss()
-            
-            # 发送对冲平仓结果通知
-            if hedge_close_result['total_positions'] > 0:
-                hedge_message = f"🔄 对冲平仓操作完成\n"
-                hedge_message += f"总对冲位置: {hedge_close_result['total_positions']}\n"
-                hedge_message += f"成功平仓: {hedge_close_result['closed_successfully']}\n"
-                hedge_message += f"平仓失败: {hedge_close_result['failed_to_close']}\n"
+            # 仅在启用对冲时执行对冲平仓
+            if self.config.enable_hedge and self.active_hedge_positions:
+                self.logger.log("主订单止损完成，开始执行对冲平仓操作", "INFO")
+                self.hedge_closing_in_progress = True  # 设置对冲平仓进行中标志
                 
-                if hedge_close_result['failed_to_close'] > 0:
-                    hedge_message += f"⚠️ 部分对冲位置平仓失败，请检查日志\n"
-                    hedge_message += f"错误数量: {len(hedge_close_result['errors'])}"
+                # 执行对冲平仓
+                hedge_close_result = await self._close_all_hedge_positions_on_stop_loss()
+            
+                # 发送对冲平仓结果通知
+                if hedge_close_result['total_positions'] > 0:
+                    hedge_message = f"🔄 对冲平仓操作完成\n"
+                    hedge_message += f"总对冲位置: {hedge_close_result['total_positions']}\n"
+                    hedge_message += f"成功平仓: {hedge_close_result['closed_successfully']}\n"
+                    hedge_message += f"平仓失败: {hedge_close_result['failed_to_close']}\n"
+                    
+                    if hedge_close_result['failed_to_close'] > 0:
+                        hedge_message += f"⚠️ 部分对冲位置平仓失败，请检查日志\n"
+                        hedge_message += f"错误数量: {len(hedge_close_result['errors'])}"
+                    else:
+                        hedge_message += f"✅ 所有对冲位置已成功平仓"
+                    
+                    await self.send_notification(hedge_message)
                 else:
-                    hedge_message += f"✅ 所有对冲位置已成功平仓"
-                
-                await self.send_notification(hedge_message)
+                    self.logger.log("没有活跃的对冲位置需要平仓", "INFO")
+                    
+                # 对冲平仓完成，清除标志
+                self.hedge_closing_in_progress = False
+                self.logger.log("对冲平仓操作完成，清除进行中标志", "INFO")
             else:
-                self.logger.log("没有活跃的对冲位置需要平仓", "INFO")
+                self.logger.log("未启用对冲或无活跃对冲位置，跳过对冲平仓操作", "INFO")
                 
         except Exception as e:
+            # 即使出错也要清除标志
+            self.hedge_closing_in_progress = False
             error_message = f"❌ 对冲平仓操作失败: {e}"
             self.logger.log(f"止损回调中执行对冲平仓时出错: {e}", "ERROR")
             self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
@@ -1058,22 +1522,22 @@ class TradingBot:
             await self.exchange_client.connect()
 
             # Initialize hedge client if enabled
-            if self.hedge_client is not None:
+            if self.hedge_exchange is not None:
                 try:
                     # Set the ticker for hedge client
-                    self.hedge_client.config.ticker = self.config.ticker
+                    self.hedge_exchange.config.ticker = self.config.ticker
                     
                     # Connect hedge client
-                    await self.hedge_client.connect()
+                    await self.hedge_exchange.connect()
                     
                     # Get contract attributes for hedge client (this will set the correct contract_id and tick_size)
-                    hedge_contract_id, hedge_tick_size = await self.hedge_client.get_contract_attributes()
+                    hedge_contract_id, hedge_tick_size = await self.hedge_exchange.get_contract_attributes()
                     self.hedge_contract_id = hedge_contract_id  # Save hedge client's contract_id
                     self.logger.log(f"Hedge client connected successfully with contract_id: {hedge_contract_id}, tick_size: {hedge_tick_size}", "INFO")
                 except Exception as e:
                     self.logger.log(f"Failed to connect hedge client: {e}", "ERROR")
                     # Don't raise exception here, just disable hedging
-                    self.hedge_client = None
+                    self.hedge_exchange = None
                     self.config.enable_hedge = False
                     self.logger.log("Hedging disabled due to connection failure", "WARNING")
 
@@ -1227,9 +1691,42 @@ class TradingBot:
                                     if retry_count > 5:  # 如果重试次数较多，发送通知
                                         await self.send_notification(f"Stop-loss completed after {retry_count} attempts")
                                 
-                                self.logger.log("Stop-loss successfully executed, proceeding with shutdown", "INFO")
+                                self.logger.log("Stop-loss successfully executed, proceeding with hedge position closure", "INFO")
                             
-                            # Severe drawdown - stop trading after executing stop-loss
+                            # 只有在启用对冲模式且对冲交易所存在时才执行对冲平仓
+                            hedge_close_result = {'total_positions': 0, 'closed_successfully': 0, 'failed_to_close': 0, 'errors': []}
+                            if self.config.enable_hedge and self.hedge_exchange:
+                                # 检查对冲平仓是否已经在进行中或已完成，避免重复执行
+                                if self.hedge_closing_in_progress:
+                                    self.logger.log("对冲平仓已在进行中，跳过重复执行", "INFO")
+                                    # 等待对冲平仓完成
+                                    max_wait_time = 60  # 最多等待60秒
+                                    wait_start = time.time()
+                                    while self.hedge_closing_in_progress and (time.time() - wait_start) < max_wait_time:
+                                        await asyncio.sleep(0.5)
+                                    
+                                    if self.hedge_closing_in_progress:
+                                        self.logger.log("等待对冲平仓完成超时，继续执行", "WARNING")
+                                    else:
+                                        self.logger.log("对冲平仓已完成，无需重复执行", "INFO")
+                                else:
+                                    self.logger.log("主订单止损完成，开始执行对冲平仓操作", "INFO")
+                                    hedge_close_result = await self._close_all_hedge_positions_on_stop_loss()
+                            else:
+                                self.logger.log("对冲模式未启用或对冲交易所不存在，跳过对冲平仓操作", "INFO")
+                            
+                            # 记录对冲平仓结果
+                            if hedge_close_result['total_positions'] > 0:
+                                self.logger.log(f"对冲平仓结果: 总计{hedge_close_result['total_positions']}个位置, "
+                                               f"成功{hedge_close_result['closed_successfully']}个, "
+                                               f"失败{hedge_close_result['failed_to_close']}个", "INFO")
+                                if hedge_close_result['errors']:
+                                    for error in hedge_close_result['errors']:
+                                        self.logger.log(f"对冲平仓错误: {error}", "ERROR")
+                            else:
+                                self.logger.log("没有需要平仓的对冲位置", "INFO")
+                            
+                            # Severe drawdown - stop trading after executing stop-loss and hedge closure
                             msg = f"\n\n🚨 SEVERE DRAWDOWN ALERT 🚨\n"
                             msg += f"Exchange: {self.config.exchange.upper()}\n"
                             msg += f"Ticker: {self.config.ticker.upper()}\n"
@@ -1237,8 +1734,13 @@ class TradingBot:
                             msg += f"Current Net Worth: {current_networth}\n"
                             msg += f"Drawdown: {drawdown_percentage:.2f}%\n"
                             msg += f"Threshold: {self.config.drawdown_severe_threshold}%\n"
-                            msg += "Automatic stop-loss executed, trading stopped due to severe drawdown!\n"
-                            msg += "已执行自动止损，严重回撤，交易已停止！\n"
+                            
+                            if self.config.enable_hedge and self.hedge_exchange:
+                                msg += "Automatic stop-loss and hedge closure executed, trading stopped due to severe drawdown!\n"
+                                msg += "已执行自动止损和对冲平仓，严重回撤，交易已停止！\n"
+                            else:
+                                msg += "Automatic stop-loss executed, trading stopped due to severe drawdown!\n"
+                                msg += "已执行自动止损，严重回撤，交易已停止！\n"
                             
                             self.logger.log(msg, "ERROR")
                             await self.send_notification(msg)
@@ -1383,6 +1885,12 @@ class TradingBot:
                         # Check if trading is paused due to medium drawdown
                         if self.trading_paused:
                             self.logger.log("Skipping new order placement - trading paused due to medium drawdown", "INFO")
+                            await asyncio.sleep(5)
+                            continue
+
+                        # Check if stop loss has been triggered - prevent new orders during hedge closing
+                        if self.drawdown_monitor and self.drawdown_monitor.is_stop_loss_triggered():
+                            self.logger.log("Skipping new order placement - stop loss triggered, waiting for hedge positions to close", "INFO")
                             await asyncio.sleep(5)
                             continue
 
